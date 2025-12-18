@@ -1,3 +1,5 @@
 <Solution>
-  <Project Path="PRDigest.NET/PRDigest.NET.csproj" />
+  <Folder Name="/src/">
+    <Project Path="src/PRDigest.NET/PRDigest.NET.csproj" />
+  </Folder>
 </Solution>
