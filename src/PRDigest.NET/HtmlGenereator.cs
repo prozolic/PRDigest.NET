@@ -222,6 +222,7 @@ internal static class HtmlGenereator
     h3 {
       font-size: 20px;
       font-weight: 600;
+      font-weight: bold;
       line-height: 1.5;
       margin: 32px 0 16px 0;
       color: #1a1a1a;
@@ -326,6 +327,22 @@ internal static class HtmlGenereator
     strong {
       font-weight: 600;
       color: #1a1a1a;
+    }
+
+    #table-of-contents + ol li {
+        padding: 0;
+        margin: 0;
+        font-weight: bold;
+    }
+
+    #table-of-contents + ol li a {
+        color: #000000;
+        font-weight: bold;
+    }
+
+    #table-of-contents + ol li a:hover {
+        color: #9ca3af;
+        text-decoration: none;
     }
 
     footer {

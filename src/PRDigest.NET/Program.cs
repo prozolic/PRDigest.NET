@@ -91,6 +91,10 @@ async ValueTask SummarizeCurrentPullRequestAndCreate(string archivesDir, string 
         AnthropicClient anthropicClient = new() { APIKey = Environment.GetEnvironmentVariable("ANTHROPIC_API_TOKEN") };
 
         var markdownlBuilder = new StringBuilder();
+        var tableOfContentsBuilder = new StringBuilder();
+        tableOfContentsBuilder.AppendLine("### 目次 {#table-of-contents}");
+
+        var index = 1;
         var separator = Environment.NewLine + "---" + Environment.NewLine;
         foreach (var pr in PullRequestInfos)
         {
@@ -121,24 +125,26 @@ async ValueTask SummarizeCurrentPullRequestAndCreate(string archivesDir, string 
                 }
             }
 
+            tableOfContentsBuilder.AppendLine($"{index++}. [#{pr.Issue.Number} {pr.Issue.Title}](#{pr.Issue.Number})");
+
             var labels = pr.PullRequest.Labels;
             var labelText = labels.Count > 0 ?
                 string.Join(" ", labels.Select(label => $"<span style=\"background-color: #{label.Color}; color: #000000; display: inline-block; padding: 0 7px; font-size:12px; font-weight:500; line-height:18px; border-radius:2em; border:1px solid transparent; white-space:nowrap; cursor:default;\">{label.Name}</span>")) :
                 "指定なし";
 
-            var prHeader = $"""
-### [#{pr.Issue.Number}]({pr.Issue.HtmlUrl}) {pr.Issue.Title}
-- 作成者: [@{pr.Issue.User.Login}]({pr.Issue.User.HtmlUrl})
-- 作成日時: {pr.Issue.CreatedAt:yyyy年MM月dd日 HH:mm:ss}(UTC)
-- マージ日時: {pr.PullRequest.MergedAt:yyyy年MM月dd日 HH:mm:ss}(UTC)
-- ラベル: {labelText}
+            var prHeader = $$"""
+### [#{{pr.Issue.Number}}]({{pr.Issue.HtmlUrl}}) {{pr.Issue.Title}} {#{{pr.Issue.Number}}}
+- 作成者: [@{{pr.Issue.User.Login}}]({{pr.Issue.User.HtmlUrl}})
+- 作成日時: {{pr.Issue.CreatedAt:yyyy年MM月dd日 HH:mm:ss}}(UTC)
+- マージ日時: {{pr.PullRequest.MergedAt:yyyy年MM月dd日 HH:mm:ss}}(UTC)
+- ラベル: {{labelText}}
 
 """;
             markdownlBuilder.AppendLine(prHeader + llmOutput);
             markdownlBuilder.Append(separator);
         }
 
-        markdown = markdownlBuilder.ToString();
+        markdown = tableOfContentsBuilder.ToString() + separator + markdownlBuilder.ToString();
     }
     catch (AnthropicRateLimitException)
     {
