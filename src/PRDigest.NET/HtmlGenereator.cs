@@ -417,12 +417,42 @@ internal static class HtmlGenereator
       body {
         font-size: 15px;
       }
+
+      code {
+        word-break: break-all;
+        overflow-wrap: anywhere;
+      }
+
+      pre code {
+        word-break: break-all;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+      }
+
+      li {
+        word-break: break-word;
+        overflow-wrap: anywhere;
+      }
+
+      summary {
+        padding: 1.2em 1em;
+        font-size: 16px;
+      }
+
     }
     
     @media (prefers-color-scheme: dark) {
       body {
         background-color: #111827;
         color: #e5e7eb;
+      }
+
+      details { 
+        background-color: #1f2937; 
+      }
+
+      summary { 
+        background-color: #374151; 
       }
     
       .content {
@@ -452,6 +482,10 @@ internal static class HtmlGenereator
     
       a:hover {
         color: #93c5fd;
+      }
+
+      #table-of-contents + ol li a {
+          color: #d1d5db;
       }
     
       code {
