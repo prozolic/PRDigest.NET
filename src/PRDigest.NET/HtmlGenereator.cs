@@ -269,7 +269,7 @@ internal static class HtmlGenereator
     
     ul {
       margin: 16px 0;
-      padding: 4px 4px
+      padding: 4px 4px;
       padding-left: 24px;
     }
     
