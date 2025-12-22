@@ -197,6 +197,12 @@ async ValueTask SummarizeCurrentPullRequestAndCreate(string archivesDir, string 
 
 async ValueTask CreateHtml(string archivesDir, string outputsDir)
 {
+    // set up archives directory
+    if (!Directory.Exists(archivesDir))
+    {
+        Directory.CreateDirectory(archivesDir);
+    }
+
     // set up output directory
     if (!Directory.Exists(outputsDir))
     {
