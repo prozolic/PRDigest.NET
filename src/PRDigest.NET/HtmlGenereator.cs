@@ -7,33 +7,46 @@ namespace PRDigest.NET;
 
 internal static class HtmlGenereator
 {
+    private static readonly StringComparer NumericOrderingComparer = StringComparer.Create(CultureInfo.InvariantCulture, CompareOptions.NumericOrdering);
+
     public static string GenerateIndex(string archivesDir)
     {
-        var comparer = StringComparer.Create(CultureInfo.InvariantCulture, CompareOptions.NumericOrdering);
+        var comparer = NumericOrderingComparer;
 
-        var builder = new DefaultInterpolatedStringHandler(0, 0);
+        var latestPullRequestInfo = "";
+
+        var detailsBuilder = new DefaultInterpolatedStringHandler(0, 0);
         foreach (var yearDirs in Directory.GetDirectories(archivesDir).OrderDescending(comparer))
         {
             var year = Path.GetFileName(yearDirs);
             foreach (var monthDirss in Directory.GetDirectories(yearDirs).OrderDescending(comparer))
             {
                 var month = Path.GetFileName(monthDirss);
-                builder.AppendLiteral($"<details>{Environment.NewLine}");
-                builder.AppendLiteral($"   <summary>{year}/{month}</summary>{Environment.NewLine}");
-                builder.AppendLiteral($"   <ul>{Environment.NewLine}");
+                detailsBuilder.AppendLiteral($"<details>{Environment.NewLine}");
+                detailsBuilder.AppendLiteral($"   <summary>{year}年{month}月</summary>{Environment.NewLine}");
+                detailsBuilder.AppendLiteral($"   <ul>{Environment.NewLine}");
 
                 foreach (var dayFiles in Directory.GetFiles(monthDirss, "*.html").OrderDescending(comparer))
                 {
-                    var day = Path.GetFileName(dayFiles);
-                    builder.AppendLiteral($"     <li><a href=\"./{year}/{month}/{day}\">{year}/{month}/{Path.GetFileNameWithoutExtension(day)}</a> </li>{Environment.NewLine}");
+
+                    if (latestPullRequestInfo.Length == 0)
+                    {
+                        latestPullRequestInfo = $"""
+                            <h2>最新 PR</h2>
+                            <p><a href="./{year}/{month}/{Path.GetFileName(dayFiles)}">{year}年{month}月{Path.GetFileNameWithoutExtension(dayFiles)}日</a></p>
+                            <h2>過去の月別ダイジェスト</h2>
+                            """;
+                    }
+
+                    detailsBuilder.AppendLiteral($"     <li><a href=\"./{year}/{month}/{Path.GetFileName(dayFiles)}\">{year}年{month}月{Path.GetFileNameWithoutExtension(dayFiles)}日</a> </li>{Environment.NewLine}");
                 }
 
-                builder.AppendLiteral($"   </ul>{Environment.NewLine}");
-                builder.AppendLiteral($"</details>{Environment.NewLine}");
+                detailsBuilder.AppendLiteral($"   </ul>{Environment.NewLine}");
+                detailsBuilder.AppendLiteral($"</details>{Environment.NewLine}");
             }
         }
 
-        return GenerateTemplateHtml($"PR Digest.NET", "dotnet/runtimeにマージされたPull RequestをAIで日本語要約", builder.ToStringAndClear());
+        return GenerateTemplateHtml($"PR Digest.NET", "dotnet/runtimeにマージされたPull RequestをAIで日本語要約", latestPullRequestInfo + detailsBuilder.ToStringAndClear());
     }
 
     public static string GenerateHtmlFromMarkdown(string startTargetDate, string markdownContent)
@@ -42,7 +55,8 @@ internal static class HtmlGenereator
         var contentHtml = Markdown.ToHtml(markdownContent, pipeline);
 
         var content = $"""
-      <h2>このページは、<a href="https://github.com/dotnet/runtime">dotnet/runtime</a>リポジトリにマージされたPull Requestを自動的に収集し、その内容をAIが要約した内容を表示しています。</h2>
+      <h2>注意点</h2>
+      <p>このページは、<a href="https://github.com/dotnet/runtime">dotnet/runtime</a>リポジトリにマージされたPull Requestを自動的に収集し、その内容をAIが要約した内容を表示しています。そのため、必ずしも正確な要約ではない場合があります。</p>
       <hr>
       {contentHtml}
 """;
@@ -96,6 +110,11 @@ internal static class HtmlGenereator
     </div>
   </main>
 </div>
+<footer>
+  <div>
+    <p>Copyright &copy; 2025 prozolic</p>
+  </div>
+</footer>
 </body>
 </html>
 """;
@@ -240,11 +259,13 @@ internal static class HtmlGenereator
     
     ul {
       margin: 16px 0;
+      padding: 4px 4px
       padding-left: 24px;
     }
     
     li {
       margin: 8px 0;
+      padding: 4px 4px;
       color: #374151;
     }
 
@@ -305,6 +326,20 @@ internal static class HtmlGenereator
     strong {
       font-weight: 600;
       color: #1a1a1a;
+    }
+
+    footer {
+      background: #151b23;
+      color: #9ca3af;
+      padding: 32px 24px;
+      margin-top: 48px;
+      text-align: center;
+      font-size: 14px;
+    }
+
+    footer p {
+      margin: 8px 0;
+      color: #9ca3af;
     }
 
     @media (min-width: 1200px) {

@@ -11,7 +11,7 @@ var startTime = TimeProvider.System.GetTimestamp();
 
 var archivesDir = args[0];
 var outputsDir = args[1];
-if (args.Length == 2)
+if (args.Length == 3 && args[2] == "-g")
 {
     // generate current day's PR markdown and HTML
     await SummarizeCurrentPullRequestAndCreate(archivesDir, outputsDir);
@@ -105,12 +105,12 @@ async ValueTask SummarizeCurrentPullRequestAndCreate(string archivesDir, string 
 
             var message = await anthropicClient
                 .WithOptions(options => options with
-                {
+                    {
                     Timeout = TimeSpan.FromMinutes(5),
                     MaxRetries = 3,
-                }
-            )
-            .Messages.Create(parameters);
+                    }
+                )
+                .Messages.Create(parameters);
 
             var llmOutput = "";
             foreach (var content in message.Content)
@@ -123,14 +123,14 @@ async ValueTask SummarizeCurrentPullRequestAndCreate(string archivesDir, string 
 
             var labels = pr.PullRequest.Labels;
             var labelText = labels.Count > 0 ?
-                string.Join(",", labels.Select(label => $"<span style=\"background-color: #{label.Color}; color: #000000; display: inline-block; padding: 0 7px; font-size:12px; font-weight:500; line-height:18px; border-radius:2em; border:1px solid transparent; white-space:nowrap; cursor:default;\">{label.Name}</span>")) :
+                string.Join(" ", labels.Select(label => $"<span style=\"background-color: #{label.Color}; color: #000000; display: inline-block; padding: 0 7px; font-size:12px; font-weight:500; line-height:18px; border-radius:2em; border:1px solid transparent; white-space:nowrap; cursor:default;\">{label.Name}</span>")) :
                 "指定なし";
 
             var prHeader = $"""
 ### [#{pr.Issue.Number}]({pr.Issue.HtmlUrl}) {pr.Issue.Title}
 - 作成者: [@{pr.Issue.User.Login}]({pr.Issue.User.HtmlUrl})
-- 作成日時: {pr.Issue.CreatedAt:yyyy/MM/dd HH:mm:ss}(UTC)
-- マージ日時: {pr.PullRequest.MergedAt:yyyy/MM/dd HH:mm:ss}(UTC)
+- 作成日時: {pr.Issue.CreatedAt:yyyy年MM月dd日 HH:mm:ss}(UTC)
+- マージ日時: {pr.PullRequest.MergedAt:yyyy年MM月dd日 HH:mm:ss}(UTC)
 - ラベル: {labelText}
 
 """;

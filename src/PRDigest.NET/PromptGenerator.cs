@@ -44,7 +44,7 @@ internal static class PromptGenerator
 以下のdotnet/runtimeのPull Requestを最大1000文字までで要約してください。
 出力時にタイトルは不要です。
 
-Pull Request名
+Pull Request:
 - {info.PullRequest.Title} #{info.PullRequest.Number}
 - 作成者: {info.PullRequest.User.Login}
 - レビュワー: {reviewersBuilder.ToStringAndClear()}
