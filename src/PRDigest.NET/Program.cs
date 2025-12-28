@@ -88,7 +88,8 @@ async ValueTask SummarizeCurrentPullRequestAndCreate(string archivesDir, string 
     var markdown = "";
     try
     {
-        AnthropicClient anthropicClient = new() { APIKey = Environment.GetEnvironmentVariable("ANTHROPIC_API_TOKEN") };
+        // Configures ANTHROPIC_API_KEY.
+        AnthropicClient anthropicClient = new();
 
         var markdownlBuilder = new StringBuilder();
         var tableOfContentsBuilder = new StringBuilder();
