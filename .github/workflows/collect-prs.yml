@@ -37,8 +37,7 @@ jobs:
         git config --local user.email "41898282+github-actions[bot]@users.noreply.github.com"
         git config --local user.name "github-actions[bot]"
         git add ./archives
-        git commit -m "Summaraize latest PRs by github-actions[bot]"
-        git push origin main
+        git diff --quiet && git diff --staged --quiet || (git commit -m "Summaraize latest PRs by github-actions[bot]" && git push origin main)
     - name: Upload artifact
       uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b # v4.0.0
       with:
@@ -58,5 +57,6 @@ jobs:
       - name: Deploy
         id: deployment
         uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4.0.5
+
 
 
