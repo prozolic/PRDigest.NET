@@ -40,6 +40,84 @@ async ValueTask SummarizeCurrentPullRequestAndCreate(string archivesDir, string 
     DateTimeOffset startTargetDate = new(previousDate.Year, previousDate.Month, previousDate.Day, 0, 0, 0, previousDate.Offset);
     DateTimeOffset endTargetDate = (new DateTimeOffset(currentDate.Year, currentDate.Month, currentDate.Day, 0, 0, 0, currentDate.Offset)).Add(TimeSpan.FromSeconds(-1));
 
+    var year = $"{startTargetDate.Year:D4}";
+    var month = $"{startTargetDate.Month:D2}";
+    var day = $"{startTargetDate.Day:D2}";
+
+    // Set up directories
+    SetupDirectoryIfNotExists(archivesDir, outputsDir, year, month, day);
+
+    // Check if summary already exists
+    if (ExistSummaryForSpecifiedDate(archivesDir, year, month, day))
+    {
+        Console.WriteLine($"Summary for {startTargetDate:yyyy/MM/dd} already exists.");
+        return;
+    }
+
+    // Get all merged pull requests.
+    var pullRequestInfos = await GetAllPullRequestInfoAsync(startTargetDate, endTargetDate);
+    if (pullRequestInfos.Length == 0)
+    {
+        Console.WriteLine($"There were no PRs merged into {FullRepo} between {startTargetDate:yyyy/MM/dd HH:mm:ss} and {endTargetDate:yyyy/MM/dd HH:mm:ss}.");
+        return;
+    }
+    Console.WriteLine($"{pullRequestInfos.Length} pull requests into {FullRepo} were merged between {startTargetDate:yyyy/MM/dd HH:mm:ss} and {endTargetDate:yyyy/MM/dd HH:mm:ss}.");
+
+    // Generate HTML content for each pull request using Anthropic API.
+    var markdown = await SummarizePullRequestAsync(pullRequestInfos);
+    if (string.IsNullOrEmpty(markdown)) return;
+
+    // Save markdown and HTML files.
+    var html = HtmlGenereator.GenerateHtmlFromMarkdown($"{year}年{month}月{day}日", markdown);
+    var markdownTask = File.WriteAllTextAsync(Path.Combine(archivesDir, year, month, $"{day}.md"), markdown);
+    var htmlTask = File.WriteAllTextAsync(Path.Combine(outputsDir, year, month, $"{day}.html"), html);
+    await Task.WhenAll(markdownTask, htmlTask);
+}
+
+void SetupDirectoryIfNotExists(string archivesDir, string outputsDir, string year, string month, string day)
+{
+    // Set up archives directory
+    if (!Directory.Exists(archivesDir))
+    {
+        Directory.CreateDirectory(archivesDir);
+    }
+    if (!Directory.Exists(Path.Combine(archivesDir, year)))
+    {
+        Directory.CreateDirectory(Path.Combine(archivesDir, year));
+    }
+    if (!Directory.Exists(Path.Combine(archivesDir, year, month)))
+    {
+        Directory.CreateDirectory(Path.Combine(archivesDir, year, month));
+    }
+
+    // Set up output directory
+    if (!Directory.Exists(outputsDir))
+    {
+        Directory.CreateDirectory(outputsDir);
+    }
+    if (!Directory.Exists(Path.Combine(outputsDir, year)))
+    {
+        Directory.CreateDirectory(Path.Combine(outputsDir, year));
+    }
+    if (!Directory.Exists(Path.Combine(outputsDir, year, month)))
+    {
+        Directory.CreateDirectory(Path.Combine(outputsDir, year, month));
+    }
+}
+
+bool ExistSummaryForSpecifiedDate(string archivesDir, string year, string month, string day)
+{
+    var summaryPath = Path.Combine(archivesDir, year, month, $"{day}.md");
+    return File.Exists(summaryPath);
+}
+
+async ValueTask<PullRequestInfo[]> GetAllPullRequestInfoAsync(DateTimeOffset startTargetDate, DateTimeOffset endTargetDate)
+{
+    // Target dotnet/runtime.
+    const string OWNER = "dotnet";
+    const string REPO = "runtime";
+    const string FullRepo = $"{OWNER}/{REPO}";
+
     // Create search request for merged pull requests in the specified date range
     var searchRequest = new SearchIssuesRequest()
     {
@@ -58,21 +136,19 @@ async ValueTask SummarizeCurrentPullRequestAndCreate(string archivesDir, string 
     var searchIssueResult = await githubClient.Search.SearchIssues(searchRequest);
     if (searchIssueResult.Items.Count == 0)
     {
-        Console.WriteLine($"There were no PRs merged into {FullRepo} between {previousDate:yyyy/MM/dd} and {currentDate:yyyy/MM/dd}.");
-        return;
+        return [];
     }
 
-    Console.WriteLine($"{searchIssueResult.Items.Count} pull requests into {FullRepo} were merged between {previousDate:yyyy/MM/dd} and {currentDate:yyyy/MM/dd}.");
-
-    var PullRequestInfos = new List<PullRequestInfo>(searchIssueResult.Items.Count);
-    foreach (var pr in searchIssueResult.Items)
+    var pullRequestInfos = new PullRequestInfo[searchIssueResult.Items.Count];
+    for (var i = 0; i < searchIssueResult.Items.Count; i++)
     {
+        var pr = searchIssueResult.Items[i];
         var pullRequestTask = githubClient.PullRequest.Get(OWNER, REPO, pr.Number);
         var filesTask = githubClient.PullRequest.Files(OWNER, REPO, pr.Number);
         var issueCommentsTask = githubClient.Issue.Comment.GetAllForIssue(OWNER, REPO, pr.Number);
         var reviewsTask = githubClient.PullRequest.Review.GetAll(OWNER, REPO, pr.Number);
 
-        var pullRequestInfo = new PullRequestInfo
+        pullRequestInfos[i] = new PullRequestInfo
         {
             Issue = pr,
             PullRequest = await pullRequestTask,
@@ -80,12 +156,14 @@ async ValueTask SummarizeCurrentPullRequestAndCreate(string archivesDir, string 
             IssueComments = await issueCommentsTask,
             Reviews = await reviewsTask,
         };
-
-        PullRequestInfos.Add(pullRequestInfo);
     }
 
+    return pullRequestInfos;
+}
+
+async ValueTask<string> SummarizePullRequestAsync(PullRequestInfo[] pullRequestInfos)
+{
     // Generate HTML content for each pull request using Anthropic API.
-    var markdown = "";
     try
     {
         // Configures ANTHROPIC_API_KEY.
@@ -97,23 +175,22 @@ async ValueTask SummarizeCurrentPullRequestAndCreate(string archivesDir, string 
 
         var index = 1;
         var separator = Environment.NewLine + "---" + Environment.NewLine;
-        foreach (var pr in PullRequestInfos)
+        foreach (var pr in pullRequestInfos)
         {
-            var prompt = PromptGenerator.GeneratePrompt(pr);
-
             MessageCreateParams parameters = new()
             {
                 MaxTokens = 1024,
-                Messages = [ new() { Role = Role.User, Content = prompt } ],
                 Model = Model.ClaudeHaiku4_5, // Claude Haiku 4.5
+                System = new MessageCreateParamsSystem([new() { Text = PromptGenerator.SystemPrompt }]),
+                Messages = [new() { Role = Role.User, Content = PromptGenerator.GeneratePrompt(pr) }],
             };
 
             var message = await anthropicClient
                 .WithOptions(options => options with
-                    {
+                {
                     Timeout = TimeSpan.FromMinutes(5),
                     MaxRetries = 3,
-                    }
+                }
                 )
                 .Messages.Create(parameters);
 
@@ -145,55 +222,18 @@ async ValueTask SummarizeCurrentPullRequestAndCreate(string archivesDir, string 
             markdownlBuilder.Append(separator);
         }
 
-        markdown = tableOfContentsBuilder.ToString() + separator + markdownlBuilder.ToString();
+        return $"{tableOfContentsBuilder}{separator}{markdownlBuilder}";
     }
     catch (AnthropicRateLimitException)
     {
-        Console.WriteLine("Anthropic API Rate limit exceeded.");
-        return;
+        Console.WriteLine("[ERROR] Anthropic API Rate limit exceeded.");
     }
     catch (AnthropicBadRequestException)
     {
-        Console.WriteLine("Credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.");
-        return;
+        Console.WriteLine("[ERROR] Credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.");
     }
 
-    var dateStr = $"{startTargetDate:yyyyMMdd}";
-    var year = dateStr[..4];
-    var month = dateStr[4..6];
-    var day = dateStr[6..8];
-
-    // set up archives directory
-    if (!Directory.Exists(archivesDir))
-    {
-        Directory.CreateDirectory(archivesDir);
-    }
-    if (!Directory.Exists(Path.Combine(archivesDir, year)))
-    {
-        Directory.CreateDirectory(Path.Combine(archivesDir, year));
-    }
-    if (!Directory.Exists(Path.Combine(archivesDir, year, month)))
-    {
-        Directory.CreateDirectory(Path.Combine(archivesDir, year, month));
-    }
-    await File.WriteAllTextAsync(Path.Combine(archivesDir, year, month, $"{day}.md"), markdown);
-
-    // set up output directory
-    if (!Directory.Exists(outputsDir))
-    {
-        Directory.CreateDirectory(outputsDir);
-    }
-    if (!Directory.Exists(Path.Combine(outputsDir, year)))
-    {
-        Directory.CreateDirectory(Path.Combine(outputsDir, year));
-    }
-    if (!Directory.Exists(Path.Combine(outputsDir, year, month)))
-    {
-        Directory.CreateDirectory(Path.Combine(outputsDir, year, month));
-    }
-
-    var html = HtmlGenereator.GenerateHtmlFromMarkdown($"{startTargetDate:yyyy年MM月dd日}", markdown);
-    await File.WriteAllTextAsync(Path.Combine(outputsDir, year, month, $"{day}.html"), html);
+    return "";
 }
 
 async ValueTask CreateHtml(string archivesDir, string outputsDir)

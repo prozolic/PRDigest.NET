@@ -45,7 +45,7 @@ internal static class HtmlGenereator
             var lastedDayHtmlPath = Directory.GetFiles(lastedMonthDirs!, "*.html").OrderDescending(comparer).FirstOrDefault();
 
             latestPullRequestInfo = $"""
-                            <h2>最新 PR</h2>
+                            <h2>最新のダイジェスト</h2>
                             <p><a href="./{lastedYear}/{lastedMonth}/{Path.GetFileName(lastedDayHtmlPath)}">{lastedYear}年{lastedMonth}月{Path.GetFileNameWithoutExtension(lastedDayHtmlPath)}日</a></p>
                             <h2>過去の月別ダイジェスト</h2>
                             """;
@@ -93,6 +93,23 @@ internal static class HtmlGenereator
   <meta name="robots" content="index, follow" />
   <meta name="theme-color" content="#03173d" />
 
+  <!-- Open Graph meta tags -->
+  <meta property="og:type" content="website" />
+  <meta property="og:url" content="https://prozolic.github.io/PRDigest.NET/" />
+  <meta property="og:title" content="{{title}}" />
+  <meta property="og:site_name" content="PR Digest.NET" />
+  <meta property="og:description" content="Merged pull request in dotnet/runtime digest." />
+  <meta property="og:image" content="https://prozolic.github.io/PRDigest.NET/icon-512.png" />
+  <meta property="og:locale" content="ja_JP" />
+
+  <meta name="twitter:card" content="summary" />
+
+  <link rel="shortcut icon" href="https://prozolic.github.io/PRDigest.NET/favicon.ico" />
+  <link rel="icon" type="image/png" sizes="16x16" href="https://prozolic.github.io/PRDigest.NET/icon-512.png" />
+  <link rel="icon" type="image/png" sizes="32x32" href="https://prozolic.github.io/PRDigest.NET/icon-512.png" />
+  <link rel="icon" type="image/png" sizes="192x192" href="https://prozolic.github.io/PRDigest.NET/icon-512.png" />
+  <link rel="icon" type="image/png" sizes="512x512" href="https://prozolic.github.io/PRDigest.NET/icon-512.png" />
+
   <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism.min.css" rel="stylesheet">
   <style>
 {{GenerateCssStyle()}}
@@ -137,7 +154,6 @@ internal static class HtmlGenereator
 
     private static string GenerateCssStyle()
     {
-
         return $$"""
     * {
       box-sizing: border-box;
