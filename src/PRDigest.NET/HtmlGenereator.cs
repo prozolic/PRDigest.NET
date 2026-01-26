@@ -56,7 +56,10 @@ internal static class HtmlGenereator
 
     public static string GenerateHtmlFromMarkdown(string startTargetDate, string markdownContent)
     {
-        var pipeline = new MarkdownPipelineBuilder().UseAdvancedExtensions().UseAutoIdentifiers(AutoIdentifierOptions.GitHub).Build();
+        var pipeline = new MarkdownPipelineBuilder()
+            .UseAutoIdentifiers(AutoIdentifierOptions.GitHub)
+            .UseAdvancedExtensions()
+            .Build();
         var contentHtml = Markdown.ToHtml(markdownContent, pipeline);
 
         var content = $"""
@@ -261,6 +264,7 @@ internal static class HtmlGenereator
 
     p {
       margin: 16px 0;
+      overflow-wrap: break-word;
       color: #374151;
     }
     
