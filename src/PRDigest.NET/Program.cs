@@ -130,7 +130,13 @@ async ValueTask<PullRequestInfo[]> GetAllPullRequestInfoAsync(DateTimeOffset sta
 
     // Set up GitHubClient.
     var githubClient = new GitHubClient(new ProductHeaderValue("PR-Digest.NET"));
-    var credentials = new Credentials(Environment.GetEnvironmentVariable("GITHUB_TOKEN"));
+    var githubToken = Environment.GetEnvironmentVariable("GITHUB_TOKEN");
+    if (string.IsNullOrEmpty(githubToken))
+    {
+        throw new InvalidOperationException("GitHub token is not set.");
+    }
+
+    var credentials = new Credentials(githubToken);
     githubClient.Credentials = credentials;
 
     var searchIssueResult = await githubClient.Search.SearchIssues(searchRequest);
