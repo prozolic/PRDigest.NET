@@ -105,7 +105,7 @@ internal static class HtmlGenereator
             if (hrIndex >= 0)
             {
                 tocHtml = contentSpan[..tocEndIndex].ToString();
-                prDetailsHtml = contentSpan[hrIndex..].ToString();
+                prDetailsHtml = contentSpan[(tocEndIndex + hrIndex)..].ToString();
             }
             else
             {
