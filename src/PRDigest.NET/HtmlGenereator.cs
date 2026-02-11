@@ -89,7 +89,6 @@ internal static class HtmlGenereator
     {
         var document = Markdown.Parse(markdownContent, Pipeline);
         var contentHtml = Markdown.ToHtml(document, Pipeline);
-        var analyzerResult = PullReqeustAnalayzer.Analayze(document);
 
         // Split contentHtml into TOC part and PR details part
         // The TOC ends after </ol>, then a <hr /> separates it from PR details
@@ -120,7 +119,8 @@ internal static class HtmlGenereator
             prDetailsHtml = "";
         }
 
-        var labelViewHtml = GenerateLabelViewHtml(document, analyzerResult);
+        var analyzerResult = PullReqeustAnalayzer.Analayze(document);
+        var labelViewHtml = GenerateLabelViewHtml(analyzerResult);
 
         var content = $"""
       <h2>注意点</h2>
@@ -142,7 +142,7 @@ internal static class HtmlGenereator
         return GenerateTemplateHtml($"Pull Request on {startTargetDate}", "dotnet/runtimeにマージされたPull RequestをAIで日本語要約", content, includeViewScript: true);
     }
 
-    private static string GenerateLabelViewHtml(MarkdownDocument document, PullReqeustAnalayzer.AnalayzerResult analyzerResult)
+    private static string GenerateLabelViewHtml(PullReqeustAnalayzer.AnalayzerResult analyzerResult)
     {
         if (analyzerResult.LabelInfo is null || analyzerResult.LabelCount == 0)
             return "<p>ラベル情報がありません。</p>";
