@@ -1,11 +1,19 @@
 ﻿using Markdig;
 using Markdig.Extensions.AutoIdentifiers;
-using Markdig.Syntax;
 using Markdig.Syntax.Inlines;
 using System.Globalization;
 using System.Runtime.CompilerServices;
+using System.Text.RegularExpressions;
 
 namespace PRDigest.NET;
+
+internal static partial class RegexHelper
+{
+    public const string PullRequestStatsCommentPrefix = "<!--PR_STATS:";
+
+    [GeneratedRegex(PullRequestStatsCommentPrefix + /*lang=regex*/ @"([0-9]+)/([0-9]+)-->")]
+    public static partial Regex PullRequestStats { get; }
+}
 
 internal static class HtmlGenereator
 {
@@ -30,9 +38,16 @@ internal static class HtmlGenereator
                 detailsBuilder.AppendLiteral($"   <summary>{year}年{month}月</summary>{Environment.NewLine}");
                 detailsBuilder.AppendLiteral($"   <ul class=\"daylist\">{Environment.NewLine}");
 
-                foreach (var htmlPath in Directory.GetFiles(monthDirss, "*.html").Order(comparer))
+                foreach (var htmlPath in Directory.GetFiles(monthDirss, "*.html").OrderDescending(comparer))
                 {
-                    detailsBuilder.AppendLiteral($"     <li class=\"dayitem\"><a href=\"./{year}/{month}/{Path.GetFileName(htmlPath)}\">{year}年{month}月{Path.GetFileNameWithoutExtension(htmlPath)}日</a> </li>{Environment.NewLine}");
+                    var fileContent = File.ReadAllText(htmlPath);
+                    var match = RegexHelper.PullRequestStats.Match(fileContent);
+
+                    string prStats = match.Success
+                        ? $" ({match.Groups[1].Value} / Bot: {match.Groups[2].Value})"
+                        : string.Empty;
+
+                    detailsBuilder.AppendLiteral($"     <li class=\"dayitem\"><a href=\"./{year}/{month}/{Path.GetFileName(htmlPath)}\">{year}年{month}月{Path.GetFileNameWithoutExtension(htmlPath)}日</a>{prStats}</li>{Environment.NewLine}");
                 }
 
                 detailsBuilder.AppendLiteral($"   </ul>{Environment.NewLine}");

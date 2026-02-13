@@ -69,6 +69,11 @@ async ValueTask SummarizeCurrentPullRequestAndCreate(string archivesDir, string 
 
     // Save markdown and HTML files.
     var html = HtmlGenereator.GenerateHtmlFromMarkdown($"{year}年{month}月{day}日", markdown);
+
+    // TODO: Index generator is depending on the folder structure so there is no way to pass the PR statistics.
+    //       As a workaround, inject it as an HTML comment.
+    html = $"{RegexHelper.PullRequestStatsCommentPrefix}{pullRequestInfos.Count(x => !x.IsBotCommit)})/{pullRequestInfos.Count(x => x.IsBotCommit)}-->{Environment.NewLine}{html}";
+
     var markdownTask = File.WriteAllTextAsync(Path.Combine(archivesDir, year, month, $"{day}.md"), markdown);
     var htmlTask = File.WriteAllTextAsync(Path.Combine(outputsDir, year, month, $"{day}.html"), html);
     await Task.WhenAll(markdownTask, htmlTask);
@@ -179,6 +184,7 @@ async ValueTask<string> SummarizePullRequestAsync(PullRequestInfo[] pullRequestI
     var totalInputTokensPerMinute = 0L;
     var totalOutputTokens = 0L;
     var totalOutputTokensPerMinute = 0L;
+    var isLastCommitBot = false;
 
     try
     {
@@ -186,8 +192,16 @@ async ValueTask<string> SummarizePullRequestAsync(PullRequestInfo[] pullRequestI
         // Configures ANTHROPIC_API_KEY.
         AnthropicClient anthropicClient = new();
 
-        foreach (var pr in pullRequestInfos)
+        foreach (var pr in pullRequestInfos.OrderBy(x => x.IsBotCommit))
         {
+            if (!isLastCommitBot && pr.IsBotCommit)
+            {
+                isLastCommitBot = true;
+
+                tableOfContentsBuilder.AppendLine("#### Bot");
+                index = 1;
+            }
+
             MessageCreateParams parameters = new()
             {
                 MaxTokens = 1024,
@@ -317,5 +331,8 @@ internal sealed class PullRequestInfo
     public required IReadOnlyList<IssueComment> IssueComments { get; init; }
 
     public required IReadOnlyList<PullRequestReview> Reviews { get; init; }
+
+    public bool IsBotCommit => Issue.User.Login is "@Copilot"
+                            || Issue.User.Login.EndsWith("[bot]", StringComparison.Ordinal);
 }
 
