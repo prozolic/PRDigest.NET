@@ -184,7 +184,7 @@ async ValueTask<string> SummarizePullRequestAsync(PullRequestInfo[] pullRequestI
     var totalInputTokensPerMinute = 0L;
     var totalOutputTokens = 0L;
     var totalOutputTokensPerMinute = 0L;
-    var isLastCommitBot = false;
+    var isLastTocItemBot = false;
 
     try
     {
@@ -194,9 +194,9 @@ async ValueTask<string> SummarizePullRequestAsync(PullRequestInfo[] pullRequestI
 
         foreach (var pr in pullRequestInfos.OrderBy(x => x.IsBotCommit))
         {
-            if (!isLastCommitBot && pr.IsBotCommit)
+            if (!isLastTocItemBot && pr.IsBotCommit)
             {
-                isLastCommitBot = true;
+                isLastTocItemBot = true;
 
                 tableOfContentsBuilder.AppendLine("#### Bot");
                 index = 1;
