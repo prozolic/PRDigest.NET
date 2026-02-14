@@ -32,7 +32,7 @@ internal static class PullReqeustAnalayzer
             {
                 if (tableOfContents && nextPrNumber is not null)
                 {
-                    // pullRequestInfo is 4 item.
+                    // pullRequestInfo is 4 items.
                     // 0: User
                     // 1: Created at
                     // 2: Merged at
