@@ -1,0 +1,52 @@
+name: Create Release from archives
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'archives/**/*.md'
+
+permissions:
+  contents: write
+
+jobs:
+  create-release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
+        with:
+          fetch-depth: 2  # For git diff
+
+      - name: Generate tag name
+        id: tag
+        run: |
+          TAG_NAME="archives-$(date +'%Y%m%d')-${GITHUB_SHA::7}"
+          echo "tag_name=$TAG_NAME" >> $GITHUB_OUTPUT
+
+      - name: Detect changed archive file
+        id: archive
+        run: |
+          echo "Changed files:"
+          git diff-tree --no-commit-id --name-only -r HEAD
+
+          FILE=$(git diff-tree --no-commit-id --name-only -r HEAD | grep "^archives/.*\.md$" | head -n 1)
+
+          if [ -z "$FILE" ]; then
+            echo "Error: No archives changes detected"
+            exit 1
+          fi
+
+          echo "file=$FILE" >> $GITHUB_OUTPUT
+
+      - name: Create Release (with archive URL)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          FILE_URL="https://github.com/${{ github.repository }}/blob/main/${{ steps.archive.outputs.file }}"
+
+          gh release create "${{ steps.tag.outputs.tag_name }}" \
+            --title "Release ${{ steps.tag.outputs.tag_name }}" \
+            --notes "📄 $FILE_URL"
