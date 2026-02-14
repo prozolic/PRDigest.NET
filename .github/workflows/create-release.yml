@@ -16,6 +16,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
+        with:
+          fetch-depth: 2  # For git diff
 
       - name: Generate tag name
         id: tag
@@ -23,18 +25,27 @@ jobs:
           TAG_NAME="archives-$(date +'%Y%m%d')"
           echo "tag_name=$TAG_NAME" >> $GITHUB_OUTPUT
 
-      - name: Get changed archive file
-        id: file
+      - name: Detect changed archive file
+        id: archive
         run: |
-          FILE_PATH=$(git diff --name-only ${{ github.event.before }} ${{ github.sha }} | grep '^archives/' | head -n 1)
-          echo "file_path=$FILE_PATH" >> $GITHUB_OUTPUT
+          echo "Changed files:"
+          git diff-tree --no-commit-id --name-only -r HEAD
 
-      - name: Create Release (with file URL)
+          FILE=$(git diff-tree --no-commit-id --name-only -r HEAD | grep "^archives/.*\.md$" | head -n 1)
+
+          if [ -z "$FILE" ]; then
+            echo "Error: No archives markdown changes detected"
+            exit 1
+          fi
+
+          echo "file=$FILE" >> $GITHUB_OUTPUT
+
+      - name: Create Release (with archive URL)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          FILE_URL="https://github.com/${{ github.repository }}/blob/main/${{ steps.file.outputs.file_path }}"
-          
+          FILE_URL="https://github.com/${{ github.repository }}/blob/main/${{ steps.archive.outputs.file }}"
+
           gh release create "${{ steps.tag.outputs.tag_name }}" \
             --title "Release ${{ steps.tag.outputs.tag_name }}" \
-            --notes "📄 Updated file: $FILE_URL"
+            --notes "📄 $FILE_URL"
