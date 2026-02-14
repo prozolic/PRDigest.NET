@@ -1,0 +1,32 @@
+name: Create Release from archives
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'archives/**'
+
+permissions:
+  contents: write
+
+jobs:
+  create-release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
+
+      - name: Generate tag name
+        id: tag
+        run: |
+          TAG_NAME="archives-$(date +'%Y%m%d')"
+          echo "tag_name=$TAG_NAME" >> $GITHUB_OUTPUT
+
+      - name: Create Release (with auto tag)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ steps.tag.outputs.tag_name }}" \
+            --title "Release ${{ steps.tag.outputs.tag_name }}" \
+            --notes "Automated release for archives update"
