@@ -9,11 +9,14 @@ internal static class PullReqeustAnalayzer
     public static AnalayzerResult Analayze(MarkdownDocument document)
     {
         var tableOfContents = false;
-        var pullRequestCount = 0;
+        var pullRequestTotalCount = 0;
+        var pullRequestCountForBot = 0;
         HeadingBlock? nextPrNumber = null;
         HashSet<string>? prNumberTable = null;
         Dictionary<string, List<HeadingBlock>>? labelTable = new();
         Dictionary<string, string>? labelColorMap = new();
+        List<HeadingBlock> botPullRequestHeadings = new();
+        List<HeadingBlock> communityPrHeadings = new();
 
         foreach (var block in document)
         {
@@ -29,10 +32,39 @@ internal static class PullReqeustAnalayzer
             {
                 if (tableOfContents && nextPrNumber is not null)
                 {
-                    var labelBlock = listBlock.Descendants<ListItemBlock>().Skip(3).FirstOrDefault();
-                    var labels = labelBlock?.Descendants<LiteralInline>()
-                            .Where(l =>
-                            {
+                    // pullRequestInfo is 4 item.
+                    // 0: User
+                    // 1: Created at
+                    // 2: Merged at
+                    // 3: Labels
+                    var pullRequestInfo = listBlock.Descendants<ListItemBlock>().ToArray();
+
+                    var userBlock = pullRequestInfo[0];
+                    var user = userBlock?.Descendants<LiteralInline>().Skip(1).FirstOrDefault();
+
+                    if (user is not null)
+                    {
+                        var userName = user.Content.ToString().Trim();
+
+                        // check ..[bot].. or @Copilot to count bot PRs
+                        if (userName.EndsWith("[bot]", StringComparison.OrdinalIgnoreCase) ||
+                            userName.IndexOf("@Copilot", StringComparison.OrdinalIgnoreCase) > -1)
+                        {
+                            pullRequestCountForBot++;
+                            botPullRequestHeadings.Add(nextPrNumber);
+                        }
+                        else
+                        {
+                            communityPrHeadings.Add(nextPrNumber);
+                        }
+                    }
+                    else
+                    {
+                        communityPrHeadings.Add(nextPrNumber);
+                    }
+
+                    var labelBlock = pullRequestInfo[3];
+                    var labels = labelBlock?.Descendants<LiteralInline>().Where(l => {
                                 var labelText = l.Content.ToString();
                                 return !string.IsNullOrWhiteSpace(labelText) && !labelText.Contains("ラベル");
                             });
@@ -89,7 +121,7 @@ internal static class PullReqeustAnalayzer
                 {
                     foreach (var listItemBlock in listBlock.Descendants<ListItemBlock>())
                     {
-                        pullRequestCount++;
+                        pullRequestTotalCount++;
                         var prNumber = listItemBlock.Descendants<LinkInline>().FirstOrDefault();
                         if (prNumber is not null)
                         {
@@ -105,17 +137,25 @@ internal static class PullReqeustAnalayzer
 
         return new AnalayzerResult
         {
-            PullRequestCount = pullRequestCount,
+            PullRequestTotalCount = pullRequestTotalCount,
+            PullRequestCountForBot = pullRequestCountForBot,
             LabelInfo = labelTable,
-            LabelColorMap = labelColorMap
+            LabelColorMap = labelColorMap,
+            BotPullRequestHeadings = botPullRequestHeadings,
+            CommunityPullRequestHeadings = communityPrHeadings
         };
     }
 
     public ref struct AnalayzerResult
     {
-        public int PullRequestCount;
+        public int PullRequestTotalCount;
+        public int PullRequestCountForBot;
         public Dictionary<string, List<HeadingBlock>>? LabelInfo;
         public Dictionary<string, string>? LabelColorMap;
+        public List<HeadingBlock>? BotPullRequestHeadings;
+        public List<HeadingBlock> CommunityPullRequestHeadings;
+
         public readonly int LabelCount => LabelInfo?.Count ?? 0;
+        public ReadOnlySpan<HeadingBlock> CommunityPullRequestHeadingSpan => CollectionsMarshal.AsSpan(CommunityPullRequestHeadings);
     }
 }

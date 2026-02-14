@@ -63,8 +63,12 @@ internal static class HtmlGenereator
                 statsHtml = $"""
                                 <div class="stats-grid">
                                     <div class="stat-card">
-                                        <div class="stat-value">{analyzerResult.PullRequestCount}</div>
+                                        <div class="stat-value">{analyzerResult.PullRequestTotalCount}</div>
                                         <div class="stat-label">マージされたPR</div>
+                                    </div>
+                                    <div class="stat-card">
+                                        <div class="stat-value">{analyzerResult.PullRequestCountForBot}</div>
+                                        <div class="stat-label">マージされたPR（Bot）</div>
                                     </div>
                                     <div class="stat-card">
                                         <div class="stat-value">{analyzerResult.LabelCount}</div>
@@ -120,6 +124,7 @@ internal static class HtmlGenereator
         }
 
         var analyzerResult = PullReqeustAnalayzer.Analayze(document);
+        var categoryViewHtml = GenerateCategorizedTocHtml(analyzerResult);
         var labelViewHtml = GenerateLabelViewHtml(analyzerResult);
 
         var content = $"""
@@ -128,10 +133,14 @@ internal static class HtmlGenereator
       <hr>
       <div class="view-tabs">
         <button class="view-tab active" data-view="list">一覧</button>
+        <button class="view-tab" data-view="category">カテゴリ別</button>
         <button class="view-tab" data-view="label">ラベル別</button>
       </div>
       <div id="list-view" class="view-panel">
         {tocHtml}
+      </div>
+      <div id="category-view" class="view-panel" style="display:none">
+        {categoryViewHtml}
       </div>
       <div id="label-view" class="view-panel" style="display:none">
         {labelViewHtml}
@@ -164,42 +173,7 @@ internal static class HtmlGenereator
 
             foreach (var heading in headingBlocks)
             {
-                // Extract PR number and title from HeadingBlock inlines
-                var pullRequestNumber = "";
-                var titleText = "";
-
-                var inline = heading.Inline?.FirstChild;
-                while (inline is not null)
-                {
-                    if (inline is LinkInline linkInline)
-                    {
-                        // The link text contains the PR number like "#124237"
-                        var linkChild = linkInline.FirstChild;
-                        while (linkChild is not null)
-                        {
-                            if (linkChild is LiteralInline lit)
-                            {
-                                pullRequestNumber = lit.Content.ToString();
-                            }
-                            linkChild = linkChild.NextSibling;
-                        }
-                    }
-                    else if (inline is LiteralInline literal)
-                    {
-                        titleText += literal.Content.ToString();
-                    }
-                    else if (inline is CodeInline codeInline)
-                    {
-                        titleText += codeInline.Content;
-                    }
-                    inline = inline.NextSibling;
-                }
-
-                // Derive anchor ID from PR number (remove '#')
-                var anchorId = pullRequestNumber.TrimStart('#');
-                var displayText = $"{pullRequestNumber} {titleText.Trim()}";
-
-                builder.AppendLiteral($"    <li><a href=\"#{anchorId}\">{System.Net.WebUtility.HtmlEncode(displayText)}</a></li>{Environment.NewLine}");
+                AppendHeadingListItem(ref builder, heading);
             }
 
             builder.AppendLiteral($"  </ol>{Environment.NewLine}");
@@ -207,6 +181,75 @@ internal static class HtmlGenereator
         }
 
         return builder.ToStringAndClear();
+    }
+
+    private static string GenerateCategorizedTocHtml(PullReqeustAnalayzer.AnalayzerResult analyzerResult)
+    {
+        var builder = new DefaultInterpolatedStringHandler(0, 0);
+        builder.AppendLiteral($"<h3>カテゴリ別PR一覧</h3>{Environment.NewLine}");
+
+        // Community PRs (expanded)
+        var communityCount = analyzerResult.CommunityPullRequestHeadingSpan.Length;
+        builder.AppendLiteral($"<details class=\"label-group\">{Environment.NewLine}");
+        builder.AppendLiteral($"  <summary class=\"label-group-summary\">Community PRs <span class=\"label-pr-count\">({communityCount} PRs)</span></summary>{Environment.NewLine}");
+        builder.AppendLiteral($"  <ol class=\"label-pr-list\">{Environment.NewLine}");
+        foreach (var heading in analyzerResult.CommunityPullRequestHeadingSpan)
+        {
+            AppendHeadingListItem(ref builder, heading);
+        }
+        builder.AppendLiteral($"  </ol>{Environment.NewLine}");
+        builder.AppendLiteral($"</details>{Environment.NewLine}");
+
+        // Bot PRs (collapsed)
+        var botCount = analyzerResult.BotPullRequestHeadings?.Count ?? 0;
+        builder.AppendLiteral($"<details class=\"label-group\">{Environment.NewLine}");
+        builder.AppendLiteral($"  <summary class=\"label-group-summary\">Bot PRs <span class=\"label-pr-count\">({botCount} PRs)</span></summary>{Environment.NewLine}");
+        builder.AppendLiteral($"  <ol class=\"label-pr-list\">{Environment.NewLine}");
+        foreach (var heading in analyzerResult.BotPullRequestHeadings ?? [])
+        {
+            AppendHeadingListItem(ref builder, heading);
+        }
+        builder.AppendLiteral($"  </ol>{Environment.NewLine}");
+        builder.AppendLiteral($"</details>{Environment.NewLine}");
+
+        return builder.ToStringAndClear();
+    }
+
+    private static void AppendHeadingListItem(ref DefaultInterpolatedStringHandler builder, HeadingBlock heading)
+    {
+        var pullRequestNumber = "";
+        var titleText = "";
+
+        var inline = heading.Inline?.FirstChild;
+        while (inline is not null)
+        {
+            if (inline is LinkInline linkInline)
+            {
+                var linkChild = linkInline.FirstChild;
+                while (linkChild is not null)
+                {
+                    if (linkChild is LiteralInline lit)
+                    {
+                        pullRequestNumber = lit.Content.ToString();
+                    }
+                    linkChild = linkChild.NextSibling;
+                }
+            }
+            else if (inline is LiteralInline literal)
+            {
+                titleText += literal.Content.ToString();
+            }
+            else if (inline is CodeInline codeInline)
+            {
+                titleText += codeInline.Content;
+            }
+            inline = inline.NextSibling;
+        }
+
+        var anchorId = pullRequestNumber.TrimStart('#');
+        var displayText = $"{pullRequestNumber} {titleText.Trim()}";
+
+        builder.AppendLiteral($"    <li><a href=\"#{anchorId}\">{System.Net.WebUtility.HtmlEncode(displayText)}</a></li>{Environment.NewLine}");
     }
 
     private static string GenerateTemplateHtml(string title, string subTitle, string content, bool includeViewScript = false)
@@ -576,7 +619,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
     .stats-grid {
       display: grid;
-      grid-template-columns: repeat(2, 1fr);
+      grid-template-columns: repeat(3, 1fr);
       gap: 16px;
       margin: 16px 0 24px 0;
     }
