@@ -58,5 +58,8 @@ jobs:
         id: deployment
         uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4.0.5
 
-
-
+  # NOTE: push with GITHUB_TOKEN won't invoke the event,
+  #       as a workaround, directly call the action.
+  release:
+    needs: deploy
+    uses: ./.github/workflows/create-release.yml

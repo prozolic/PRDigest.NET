@@ -1,6 +1,7 @@
 name: Create Release from archives
 
 on:
+  workflow_call:
   push:
     branches:
       - main
