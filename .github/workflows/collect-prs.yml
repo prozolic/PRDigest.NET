@@ -17,6 +17,8 @@ jobs:
     permissions:
       contents: write
     timeout-minutes: 10
+    outputs:
+      has_changes: ${{ steps.commit.outputs.has_changes }}
     steps:
     - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
     - name: Setup .NET
@@ -33,11 +35,18 @@ jobs:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
     - name: Commit and push changes
+      id: commit
       run: |
         git config --local user.email "41898282+github-actions[bot]@users.noreply.github.com"
         git config --local user.name "github-actions[bot]"
         git add ./archives
-        git diff --quiet && git diff --staged --quiet || (git commit -m "Summaraize latest PRs by github-actions[bot]" && git push origin main)
+
+        if git diff --quiet && git diff --staged --quiet; then
+          echo "has_changes=false" >> "$GITHUB_OUTPUT"
+        else
+          git commit -m "Summarize latest PRs by github-actions[bot]" && git push origin main
+          echo "has_changes=true" >> "$GITHUB_OUTPUT"
+        fi
     - name: Upload artifact
       uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b # v4.0.0
       with:
@@ -61,5 +70,6 @@ jobs:
   # NOTE: push with GITHUB_TOKEN won't invoke the event,
   #       as a workaround, directly call the action.
   release:
-    needs: deploy
+    needs: [summarize, deploy]
+    if: needs.summarize.outputs.has_changes == 'true'
     uses: ./.github/workflows/create-release.yml
