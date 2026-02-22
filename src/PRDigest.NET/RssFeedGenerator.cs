@@ -69,7 +69,7 @@ internal static class RssFeedGenerator
 
             var header = metadata;
             builder.AppendLiteral("            <title><![CDATA[ ");
-            builder.AppendLiteral(HtmlEncoder.Default.Encode(header.TitleText));
+            builder.AppendLiteral(header.TitleText);
             builder.AppendLiteral(" ]]></title>");
             builder.AppendLiteral(Environment.NewLine);
 
@@ -88,7 +88,7 @@ internal static class RssFeedGenerator
             builder.AppendLiteral("</guid>");
             builder.AppendLiteral(Environment.NewLine);
 
-            if (DateTimeOffset.TryParseExact(target, "yyyy/MM/dd", null, System.Globalization.DateTimeStyles.AssumeUniversal, out var date))
+            if (DateTimeOffset.TryParseExact(target, "yyyy/MM/dd".AsSpan(), null, System.Globalization.DateTimeStyles.AssumeUniversal, out var date))
             {
                 builder.AppendLiteral("            <pubDate>");
                 builder.AppendFormatted(date, format: "R");
