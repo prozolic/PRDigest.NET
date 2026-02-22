@@ -33,3 +33,19 @@ Claude Haiku 4.5
 
 - [dotnet/runtime](https://github.com/dotnet/runtime)
 - [Claude Docs - Models overview](https://platform.claude.com/docs/en/about-claude/models/overview)
+
+## Third-party Notices
+
+### Material Design Icons
+
+- Icon: rss
+- URL: https://pictogrammers.com/library/mdi/icon/rss/
+- Copyright (c) 2014 Austin Andrews (https://templarian.com/)
+- Licensed under the [Apache License, Version 2.0](https://github.com/Templarian/MaterialDesign/blob/master/LICENSE)
+
+### GitHub Octicons
+
+- Icon: mark-github
+- URL: https://github.com/primer/octicons/blob/main/icons/mark-github-24.svg
+- Copyright (c) 2012 GitHub, Inc.
+- Licensed under the [MIT License](https://github.com/primer/octicons/blob/main/LICENSE)
