@@ -1,17 +1,21 @@
 ﻿using Markdig;
 using System.Collections.Frozen;
 using System.Runtime.CompilerServices;
-using System.Text.Encodings.Web;
-using static PRDigest.NET.PullRequestAnalyzer;
 
 namespace PRDigest.NET;
 
 internal static class RssFeedGenerator
 {
-    public static string Generate(string target, string markdownContent)
+    public static string Generate(ReadOnlySpan<(string target, string markdownContent)> items)
     {
-        var document = Markdown.Parse(markdownContent, MarkdownOptions.Pipeline);
-        var analyzerResult = PullRequestAnalyzer.Analyze(document);
+        var itemBuilder = new DefaultInterpolatedStringHandler(0, 0);
+        foreach(var (target, markdownContent) in items)
+        {
+            var document = Markdown.Parse(markdownContent, MarkdownOptions.Pipeline);
+            var analyzerResult = PullRequestAnalyzer.Analyze(document);
+            AppendItems(ref itemBuilder, target, analyzerResult);
+        }
+        var itemsText = itemBuilder.ToStringAndClear();
 
         var rss = $"""
             <?xml version="1.0" encoding="UTF-8" ?>
@@ -29,7 +33,7 @@ internal static class RssFeedGenerator
                         <link>https://prozolic.github.io/PRDigest.NET/</link>
                     </image>
                     <copyright>Copyright © 2025 prozolic</copyright>
-                    {GenerateItems(target, analyzerResult)}
+                    {itemsText}
                 </channel>
             </rss>
             """;
@@ -37,9 +41,8 @@ internal static class RssFeedGenerator
         return rss;
     }
 
-    private static string GenerateItems(string target, PullRequestAnalyzer.AnalysisResults analysisResult)
+    private static void AppendItems(ref DefaultInterpolatedStringHandler itemBuilder, string target, PullRequestAnalyzer.AnalysisResults analysisResult)
     {
-        var itemBuilder = new DefaultInterpolatedStringHandler(0, 0);
         itemBuilder.AppendLiteral(Environment.NewLine);
         foreach (var metadata in analysisResult.CommunityPullRequestMetadataSpan)
         {
@@ -50,10 +53,7 @@ internal static class RssFeedGenerator
             AppendItem(ref itemBuilder, target, analysisResult.SummaryMap, metadata);
         }
 
-        return itemBuilder.ToStringAndClear();
-
-
-        static void AppendItem(ref DefaultInterpolatedStringHandler builder, string target, FrozenDictionary<string, Summary> summaryGroups, PullRequestAnalyzer.Metadata metadata)
+        static void AppendItem(ref DefaultInterpolatedStringHandler builder, string target, FrozenDictionary<string, PullRequestAnalyzer.Summary> summaryGroups, PullRequestAnalyzer.Metadata metadata)
         {
             // Rss feed item format:
             // <item>

@@ -4,6 +4,7 @@ using Anthropic.Models.Messages;
 using Octokit;
 using PRDigest.NET;
 using System.Globalization;
+using System.Runtime.InteropServices;
 using System.Text;
 
 if (args.Length == 0) return;
@@ -266,22 +267,32 @@ async ValueTask<string> SummarizePullRequestAsync(PullRequestInfo[] pullRequestI
 
 async ValueTask CreateRss(string archivesDir, string outputsDir)
 {
+    const int MaxDays = 3;
     var comparer = StringComparer.Create(CultureInfo.InvariantCulture, CompareOptions.NumericOrdering);
-    var yearDir = Directory.EnumerateDirectories(archivesDir).OrderDescending(comparer).FirstOrDefault();
-    if (yearDir == null) return;
 
-    var monthDir = Directory.EnumerateDirectories(yearDir).OrderDescending(comparer).FirstOrDefault();
-    if (monthDir == null) return;
+    var items = new List<(string target, string markdownContent)>(MaxDays);
+    foreach (var yearDir in Directory.EnumerateDirectories(archivesDir).OrderDescending(comparer))
+    {
+        var year = Path.GetFileName(yearDir);
 
-    var mdFilePath = Directory.EnumerateFiles(monthDir).OrderDescending(comparer).FirstOrDefault();
-    if (mdFilePath == null) return;
+        foreach (var monthDir in Directory.EnumerateDirectories(yearDir).OrderDescending(comparer))
+        {
+            var month = Path.GetFileName(monthDir);
 
-    var markdown = await File.ReadAllTextAsync(mdFilePath);
-    var year = Path.GetFileName(yearDir);
-    var month = Path.GetFileName(monthDir);
-    var day = Path.GetFileNameWithoutExtension(mdFilePath);
+            foreach (var mdFilePath in Directory.EnumerateFiles(monthDir, "*.md").OrderDescending(comparer))
+            {
+                if (items.Count >= MaxDays) goto END;
+                var day = Path.GetFileNameWithoutExtension(mdFilePath);
+                var markdown = await File.ReadAllTextAsync(mdFilePath);
+                items.Add(($"{year}/{month}/{day}", markdown));
+            }
+        }
+    }
 
-    var rssContent = RssFeedGenerator.Generate($"{year}/{month}/{day}", markdown);
+    if (items.Count == 0) return;
+
+END:
+    var rssContent = RssFeedGenerator.Generate(CollectionsMarshal.AsSpan(items));
     await File.WriteAllTextAsync(Path.Combine(outputsDir, $"feed.xml"), rssContent);
 }
 
@@ -299,7 +310,7 @@ async ValueTask CreateHtml(string archivesDir, string outputsDir)
         Directory.CreateDirectory(outputsDir);
     }
 
-    foreach (var yearDirs in Directory.GetDirectories(archivesDir))
+    foreach (var yearDirs in Directory.EnumerateDirectories(archivesDir))
     {
         var year = Path.GetFileName(yearDirs);
         if (!Directory.Exists(Path.Combine(outputsDir, year)))
@@ -307,7 +318,7 @@ async ValueTask CreateHtml(string archivesDir, string outputsDir)
             Directory.CreateDirectory(Path.Combine(outputsDir, year));
         }
 
-        foreach (var monthDirss in Directory.GetDirectories(yearDirs))
+        foreach (var monthDirss in Directory.EnumerateDirectories(yearDirs))
         {
             var month = Path.GetFileName(monthDirss);
             if (!Directory.Exists(Path.Combine(outputsDir, year, month)))
@@ -315,7 +326,7 @@ async ValueTask CreateHtml(string archivesDir, string outputsDir)
                 Directory.CreateDirectory(Path.Combine(outputsDir, year, month));
             }
 
-            await Parallel.ForEachAsync(Directory.GetFiles(monthDirss, "*.md"), async (dayFiles, _) =>
+            await Parallel.ForEachAsync(Directory.EnumerateFiles(monthDirss, "*.md"), async (dayFiles, _) =>
             {
                 var day = Path.GetFileNameWithoutExtension(dayFiles);
                 var markdown = await File.ReadAllTextAsync(dayFiles);
