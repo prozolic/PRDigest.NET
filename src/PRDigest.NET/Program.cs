@@ -22,7 +22,7 @@ if (args.Length == 3 && args[2] == "-g")
 // convert all markdown files to HTML
 await CreateHtml(archivesDir, outputsDir);
 
-// create RSS feed for the first time if it doesn't exist
+// (Re)create RSS feed from archived markdown files
 await CreateRss(archivesDir, outputsDir);
 
 // end
