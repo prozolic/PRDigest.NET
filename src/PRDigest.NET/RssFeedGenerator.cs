@@ -1,5 +1,6 @@
 ﻿using Markdig;
 using System.Collections.Frozen;
+using System.Globalization;
 using System.Runtime.CompilerServices;
 
 namespace PRDigest.NET;
@@ -88,7 +89,7 @@ internal static class RssFeedGenerator
             builder.AppendLiteral("</guid>");
             builder.AppendLiteral(Environment.NewLine);
 
-            if (DateTimeOffset.TryParseExact(target, "yyyy/MM/dd".AsSpan(), null, System.Globalization.DateTimeStyles.AssumeUniversal, out var date))
+            if (DateTimeOffset.TryParseExact(target, "yyyy/MM/dd".AsSpan(), CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.AssumeUniversal, out var date))
             {
                 builder.AppendLiteral("            <pubDate>");
                 builder.AppendFormatted(date, format: "R");
