@@ -1,19 +1,14 @@
 ﻿using Markdig;
-using Markdig.Extensions.AutoIdentifiers;
-using Markdig.Syntax;
-using Markdig.Syntax.Inlines;
+using System.Buffers;
 using System.Globalization;
 using System.Runtime.CompilerServices;
+using System.Text.Encodings.Web;
 
 namespace PRDigest.NET;
 
-internal static class HtmlGenereator
+internal static class HtmlGenerator
 {
     private static readonly StringComparer NumericOrderingComparer = StringComparer.Create(CultureInfo.InvariantCulture, CompareOptions.NumericOrdering);
-    private static MarkdownPipeline Pipeline = new MarkdownPipelineBuilder()
-        .UseAutoIdentifiers(AutoIdentifierOptions.GitHub)
-        .UseAdvancedExtensions()
-        .Build();
 
     public static string GenerateIndex(string archivesDir, string outputsDir)
     {
@@ -26,17 +21,40 @@ internal static class HtmlGenereator
             foreach (var monthDirss in Directory.GetDirectories(yearDirs).OrderDescending(comparer))
             {
                 var month = Path.GetFileName(monthDirss);
-                detailsBuilder.AppendLiteral($"<details>{Environment.NewLine}");
-                detailsBuilder.AppendLiteral($"   <summary>{year}年{month}月</summary>{Environment.NewLine}");
-                detailsBuilder.AppendLiteral($"   <ul class=\"daylist\">{Environment.NewLine}");
+                detailsBuilder.AppendLiteral("<details>");
+                detailsBuilder.AppendLiteral(Environment.NewLine);
+                detailsBuilder.AppendLiteral("   <summary>");
+                detailsBuilder.AppendLiteral(year);
+                detailsBuilder.AppendLiteral("年");
+                detailsBuilder.AppendLiteral(month);
+                detailsBuilder.AppendLiteral("月");
+                detailsBuilder.AppendLiteral("</summary>");
+                detailsBuilder.AppendLiteral(Environment.NewLine);
+                detailsBuilder.AppendLiteral($"   <ul class=\"daylist\">");
+                detailsBuilder.AppendLiteral(Environment.NewLine);
 
                 foreach (var htmlPath in Directory.GetFiles(monthDirss, "*.html").Order(comparer))
                 {
-                    detailsBuilder.AppendLiteral($"     <li class=\"dayitem\"><a href=\"./{year}/{month}/{Path.GetFileName(htmlPath)}\">{year}年{month}月{Path.GetFileNameWithoutExtension(htmlPath)}日</a> </li>{Environment.NewLine}");
+                    detailsBuilder.AppendLiteral($"     <li class=\"dayitem\"><a href=\"./");
+                    detailsBuilder.AppendLiteral(year);
+                    detailsBuilder.AppendLiteral("/");
+                    detailsBuilder.AppendLiteral(month);
+                    detailsBuilder.AppendLiteral("/");
+                    detailsBuilder.AppendLiteral(Path.GetFileName(htmlPath));
+                    detailsBuilder.AppendLiteral("\">");
+                    detailsBuilder.AppendLiteral(year);
+                    detailsBuilder.AppendLiteral("年");
+                    detailsBuilder.AppendLiteral(month);
+                    detailsBuilder.AppendLiteral("月");
+                    detailsBuilder.AppendLiteral(Path.GetFileNameWithoutExtension(htmlPath));
+                    detailsBuilder.AppendLiteral("日</a> </li>");
+                    detailsBuilder.AppendLiteral(Environment.NewLine);
                 }
 
-                detailsBuilder.AppendLiteral($"   </ul>{Environment.NewLine}");
-                detailsBuilder.AppendLiteral($"</details>{Environment.NewLine}");
+                detailsBuilder.AppendLiteral("   </ul>");
+                detailsBuilder.AppendLiteral(Environment.NewLine);
+                detailsBuilder.AppendLiteral("</details>");
+                detailsBuilder.AppendLiteral(Environment.NewLine);
             }
         }
 
@@ -57,8 +75,8 @@ internal static class HtmlGenereator
             if (File.Exists(latestMarkdownPath))
             {
                 var markdownContent = File.ReadAllText(latestMarkdownPath);
-                var document = Markdown.Parse(markdownContent, Pipeline);
-                var analyzerResult = PullReqeustAnalayzer.Analayze(document);
+                var document = Markdown.Parse(markdownContent, MarkdownOptions.Pipeline);
+                var analyzerResult = PullRequestAnalyzer.Analyze(document);
 
                 statsHtml = $"""
                                 <div class="stats-grid">
@@ -91,8 +109,8 @@ internal static class HtmlGenereator
 
     public static string GenerateHtmlFromMarkdown(string startTargetDate, string markdownContent)
     {
-        var document = Markdown.Parse(markdownContent, Pipeline);
-        var contentHtml = Markdown.ToHtml(document, Pipeline);
+        var document = Markdown.Parse(markdownContent, MarkdownOptions.Pipeline);
+        var contentHtml = Markdown.ToHtml(document, MarkdownOptions.Pipeline);
 
         // Split contentHtml into TOC part and PR details part
         // The TOC ends after </ol>, then a <hr /> separates it from PR details
@@ -123,7 +141,7 @@ internal static class HtmlGenereator
             prDetailsHtml = "";
         }
 
-        var analyzerResult = PullReqeustAnalayzer.Analayze(document);
+        var analyzerResult = PullRequestAnalyzer.Analyze(document);
         var categoryViewHtml = GenerateCategorizedTocHtml(analyzerResult);
         var labelViewHtml = GenerateLabelViewHtml(analyzerResult);
 
@@ -151,114 +169,107 @@ internal static class HtmlGenereator
         return GenerateTemplateHtml($"Pull Request on {startTargetDate}", "dotnet/runtimeにマージされたPull RequestをAIで日本語要約", content, includeViewScript: true);
     }
 
-    private static string GenerateLabelViewHtml(PullReqeustAnalayzer.AnalayzerResult analyzerResult)
+    private static string GenerateLabelViewHtml(PullRequestAnalyzer.AnalysisResults analyzerResult)
     {
-        if (analyzerResult.LabelInfo is null || analyzerResult.LabelCount == 0)
+        if (analyzerResult.LabelCount == 0)
             return "<p>ラベル情報がありません。</p>";
 
         var builder = new DefaultInterpolatedStringHandler(0, 0);
-        builder.AppendLiteral($"<h3>ラベル別PR一覧</h3>{Environment.NewLine}");
+        builder.AppendLiteral("<h3>ラベル別PR一覧</h3>");
+        builder.AppendLiteral(Environment.NewLine);
 
-        foreach (var (labelName, headingBlocks) in analyzerResult.LabelInfo.OrderByDescending(kv => kv.Value.Count))
+        foreach (var (labelName, metadataList) in analyzerResult.LabelMap.OrderByDescending(kv => kv.Value.Length))
         {
-            var colorStyle = "";
-            if (analyzerResult.LabelColorMap is not null && analyzerResult.LabelColorMap.TryGetValue(labelName, out var color))
+            builder.AppendLiteral("<details class=\"label-group\">");
+            builder.AppendLiteral(Environment.NewLine);
+            builder.AppendLiteral($"  <summary class=\"label-group-summary\"><span");
+            if (analyzerResult.LabelColorGroups.TryGetValue(labelName, out var color))
             {
-                colorStyle = $" style=\"background-color: {color}; color: #000000; display: inline-block; padding: 0 7px; font-size: 12px; font-weight: 500; line-height: 18px; border-radius: 2em; border: 1px solid transparent;\"";
+                builder.AppendLiteral(" style=\"background-color: ");
+                builder.AppendLiteral(color);
+                builder.AppendLiteral("; color: #000000; display: inline-block; padding: 0 7px; font-size: 12px; font-weight: 500; line-height: 18px; border-radius: 2em; border: 1px solid transparent;\"");
+            }
+            builder.AppendLiteral(">");
+            builder.AppendLiteral(labelName);
+            builder.AppendLiteral("</span> <span class=\"label-pr-count\">(");
+            builder.AppendFormatted(metadataList.Length);
+            builder.AppendLiteral(" PRs)</span></summary>");
+            builder.AppendFormatted(Environment.NewLine);
+
+            builder.AppendLiteral("  <ol class=\"label-pr-list\">");
+            builder.AppendLiteral(Environment.NewLine);
+
+            foreach (var metadata in metadataList)
+            {
+                AppendHeadingListItem(ref builder, metadata);
             }
 
-            builder.AppendLiteral($"<details class=\"label-group\">{Environment.NewLine}");
-            builder.AppendLiteral($"  <summary class=\"label-group-summary\"><span{colorStyle}>{labelName}</span> <span class=\"label-pr-count\">({headingBlocks.Count} PRs)</span></summary>{Environment.NewLine}");
-            builder.AppendLiteral($"  <ol class=\"label-pr-list\">{Environment.NewLine}");
-
-            foreach (var heading in headingBlocks)
-            {
-                AppendHeadingListItem(ref builder, heading);
-            }
-
-            builder.AppendLiteral($"  </ol>{Environment.NewLine}");
-            builder.AppendLiteral($"</details>{Environment.NewLine}");
+            builder.AppendLiteral("  </ol>");
+            builder.AppendLiteral(Environment.NewLine);
+            builder.AppendLiteral("</details>");
+            builder.AppendLiteral(Environment.NewLine);
         }
 
         return builder.ToStringAndClear();
     }
 
-    private static string GenerateCategorizedTocHtml(PullReqeustAnalayzer.AnalayzerResult analyzerResult)
+    private static string GenerateCategorizedTocHtml(PullRequestAnalyzer.AnalysisResults analyzerResult)
     {
         var builder = new DefaultInterpolatedStringHandler(0, 0);
-        builder.AppendLiteral($"<h3>カテゴリ別PR一覧</h3>{Environment.NewLine}");
-
+        builder.AppendLiteral($"<h3>カテゴリ別PR一覧</h3>");
+        builder.AppendLiteral(Environment.NewLine);
         // Community PRs (expanded)
-        var communityCount = analyzerResult.CommunityPullRequestHeadingSpan.Length;
-        builder.AppendLiteral($"<details class=\"label-group\">{Environment.NewLine}");
-        builder.AppendLiteral($"  <summary class=\"label-group-summary\">Community PRs <span class=\"label-pr-count\">({communityCount} PRs)</span></summary>{Environment.NewLine}");
-        builder.AppendLiteral($"  <ol class=\"label-pr-list\">{Environment.NewLine}");
-        foreach (var heading in analyzerResult.CommunityPullRequestHeadingSpan)
+        var communityCount = analyzerResult.CommunityPullRequestMetadataSpan.Length;
+        builder.AppendLiteral($"<details class=\"label-group\">");
+        builder.AppendLiteral(Environment.NewLine);
+        builder.AppendLiteral($"  <summary class=\"label-group-summary\">Community PRs <span class=\"label-pr-count\">(");
+        builder.AppendFormatted(communityCount);
+        builder.AppendLiteral(" PRs)</span></summary>");
+        builder.AppendFormatted(Environment.NewLine);
+
+        builder.AppendLiteral($"  <ol class=\"label-pr-list\">");
+        builder.AppendLiteral(Environment.NewLine);
+
+        foreach (var heading in analyzerResult.CommunityPullRequestMetadataSpan)
         {
             AppendHeadingListItem(ref builder, heading);
         }
-        builder.AppendLiteral($"  </ol>{Environment.NewLine}");
-        builder.AppendLiteral($"</details>{Environment.NewLine}");
+        builder.AppendLiteral("  </ol>");
+        builder.AppendLiteral(Environment.NewLine);
+        builder.AppendLiteral("</details>");
+        builder.AppendLiteral(Environment.NewLine);
 
         // Bot PRs (collapsed)
-        var botCount = analyzerResult.BotPullRequestHeadings?.Count ?? 0;
-        builder.AppendLiteral($"<details class=\"label-group\">{Environment.NewLine}");
-        builder.AppendLiteral($"  <summary class=\"label-group-summary\">Bot PRs <span class=\"label-pr-count\">({botCount} PRs)</span></summary>{Environment.NewLine}");
-        builder.AppendLiteral($"  <ol class=\"label-pr-list\">{Environment.NewLine}");
-        foreach (var heading in analyzerResult.BotPullRequestHeadings ?? [])
+        var botCount = analyzerResult.BotPullRequestMetadataSpan.Length;
+        builder.AppendLiteral("<details class=\"label-group\">");
+        builder.AppendLiteral(Environment.NewLine);
+        builder.AppendLiteral($"  <summary class=\"label-group-summary\">Bot PRs <span class=\"label-pr-count\">(");
+        builder.AppendFormatted(botCount);
+        builder.AppendLiteral(" PRs)</span></summary>");
+        builder.AppendLiteral(Environment.NewLine);
+        builder.AppendLiteral("  <ol class=\"label-pr-list\">");
+        builder.AppendLiteral(Environment.NewLine);
+        foreach (var heading in analyzerResult.BotPullRequestMetadataSpan)
         {
             AppendHeadingListItem(ref builder, heading);
         }
-        builder.AppendLiteral($"  </ol>{Environment.NewLine}");
-        builder.AppendLiteral($"</details>{Environment.NewLine}");
+        builder.AppendLiteral("  </ol>");
+        builder.AppendLiteral(Environment.NewLine);
+        builder.AppendLiteral("</details>");
+        builder.AppendLiteral(Environment.NewLine);
 
         return builder.ToStringAndClear();
     }
 
-    private static void AppendHeadingListItem(ref DefaultInterpolatedStringHandler builder, HeadingBlock heading)
+    private static void AppendHeadingListItem(ref DefaultInterpolatedStringHandler builder, PullRequestAnalyzer.Metadata metadata)
     {
-        var pullRequestNumber = "";
-        var titleText = "";
-
-        var inline = heading.Inline?.FirstChild;
-        while (inline is not null)
-        {
-            if (inline is LinkInline linkInline)
-            {
-                var linkChild = linkInline.FirstChild;
-                while (linkChild is not null)
-                {
-                    if (linkChild is LiteralInline lit)
-                    {
-                        pullRequestNumber = lit.Content.ToString();
-                    }
-                    linkChild = linkChild.NextSibling;
-                }
-            }
-            else if (inline is LiteralInline literal)
-            {
-                titleText += literal.Content.ToString();
-
-                if (literal.NextSibling is LinkDelimiterInline linkDelimiterInline)
-                {
-                    titleText += linkDelimiterInline.ToLiteral();
-                    foreach (var linkChild in linkDelimiterInline.OfType<LiteralInline>())
-                    {
-                        titleText += linkChild.Content.ToString();
-                    }
-                }
-            }
-            else if (inline is CodeInline codeInline)
-            {
-                titleText += codeInline.Content;
-            }
-            inline = inline.NextSibling;
-        }
-
-        var anchorId = pullRequestNumber.TrimStart('#');
-        var displayText = $"{pullRequestNumber} {titleText.Trim()}";
-
-        builder.AppendLiteral($"    <li><a href=\"#{anchorId}\">{System.Net.WebUtility.HtmlEncode(displayText)}</a></li>{Environment.NewLine}");
+        var text = HtmlEncoder.Default.Encode(metadata.TitleText);
+        builder.AppendLiteral($"    <li><a href=\"#");
+        builder.AppendLiteral(metadata.PullRequestNumber);
+        builder.AppendLiteral("\">");
+        builder.AppendLiteral(text);
+        builder.AppendLiteral("</a></li>");
+        builder.AppendLiteral(Environment.NewLine);
     }
 
     private static string GenerateTemplateHtml(string title, string subTitle, string content, bool includeViewScript = false)
@@ -302,6 +313,7 @@ internal static class HtmlGenereator
   <link rel="icon" type="image/png" sizes="32x32" href="https://prozolic.github.io/PRDigest.NET/icon-512.png" />
   <link rel="icon" type="image/png" sizes="192x192" href="https://prozolic.github.io/PRDigest.NET/icon-512.png" />
   <link rel="icon" type="image/png" sizes="512x512" href="https://prozolic.github.io/PRDigest.NET/icon-512.png" />
+  <link rel="alternate" type="application/rss+xml" title="PR Digest.NET" href="https://prozolic.github.io/PRDigest.NET/feed.xml" />
 
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
   <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism.min.css" rel="stylesheet">
