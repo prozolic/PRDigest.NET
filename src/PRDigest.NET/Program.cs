@@ -3,6 +3,8 @@ using Anthropic.Exceptions;
 using Anthropic.Models.Messages;
 using Octokit;
 using PRDigest.NET;
+using System.Globalization;
+using System.Runtime.InteropServices;
 using System.Text;
 
 if (args.Length == 0) return;
@@ -19,6 +21,9 @@ if (args.Length == 3 && args[2] == "-g")
 
 // convert all markdown files to HTML
 await CreateHtml(archivesDir, outputsDir);
+
+// (Re)create RSS feed from archived markdown files
+await CreateRss(archivesDir, outputsDir);
 
 // end
 var endTime = TimeProvider.System.GetTimestamp();
@@ -68,7 +73,7 @@ async ValueTask SummarizeCurrentPullRequestAndCreate(string archivesDir, string 
     if (string.IsNullOrEmpty(markdown)) return;
 
     // Save markdown and HTML files.
-    var html = HtmlGenereator.GenerateHtmlFromMarkdown($"{year}年{month}月{day}日", markdown);
+    var html = HtmlGenerator.GenerateHtmlFromMarkdown($"{year}年{month}月{day}日", markdown);
     var markdownTask = File.WriteAllTextAsync(Path.Combine(archivesDir, year, month, $"{day}.md"), markdown);
     var htmlTask = File.WriteAllTextAsync(Path.Combine(outputsDir, year, month, $"{day}.html"), html);
     await Task.WhenAll(markdownTask, htmlTask);
@@ -260,6 +265,37 @@ async ValueTask<string> SummarizePullRequestAsync(PullRequestInfo[] pullRequestI
     return $"{tableOfContentsBuilder}{separator}{markdownlBuilder}";
 }
 
+async ValueTask CreateRss(string archivesDir, string outputsDir)
+{
+    const int MaxDays = 3;
+    var comparer = StringComparer.Create(CultureInfo.InvariantCulture, CompareOptions.NumericOrdering);
+
+    var items = new List<(string target, string markdownContent)>(MaxDays);
+    foreach (var yearDir in Directory.EnumerateDirectories(archivesDir).OrderDescending(comparer))
+    {
+        var year = Path.GetFileName(yearDir);
+
+        foreach (var monthDir in Directory.EnumerateDirectories(yearDir).OrderDescending(comparer))
+        {
+            var month = Path.GetFileName(monthDir);
+
+            foreach (var mdFilePath in Directory.EnumerateFiles(monthDir, "*.md").OrderDescending(comparer))
+            {
+                if (items.Count >= MaxDays) goto END;
+                var day = Path.GetFileNameWithoutExtension(mdFilePath);
+                var markdown = await File.ReadAllTextAsync(mdFilePath);
+                items.Add(($"{year}/{month}/{day}", markdown));
+            }
+        }
+    }
+
+    if (items.Count == 0) return;
+
+END:
+    var rssContent = RssFeedGenerator.Generate(CollectionsMarshal.AsSpan(items));
+    await File.WriteAllTextAsync(Path.Combine(outputsDir, $"feed.xml"), rssContent);
+}
+
 async ValueTask CreateHtml(string archivesDir, string outputsDir)
 {
     // set up archives directory
@@ -274,7 +310,7 @@ async ValueTask CreateHtml(string archivesDir, string outputsDir)
         Directory.CreateDirectory(outputsDir);
     }
 
-    foreach (var yearDirs in Directory.GetDirectories(archivesDir))
+    foreach (var yearDirs in Directory.EnumerateDirectories(archivesDir))
     {
         var year = Path.GetFileName(yearDirs);
         if (!Directory.Exists(Path.Combine(outputsDir, year)))
@@ -282,7 +318,7 @@ async ValueTask CreateHtml(string archivesDir, string outputsDir)
             Directory.CreateDirectory(Path.Combine(outputsDir, year));
         }
 
-        foreach (var monthDirss in Directory.GetDirectories(yearDirs))
+        foreach (var monthDirss in Directory.EnumerateDirectories(yearDirs))
         {
             var month = Path.GetFileName(monthDirss);
             if (!Directory.Exists(Path.Combine(outputsDir, year, month)))
@@ -290,20 +326,20 @@ async ValueTask CreateHtml(string archivesDir, string outputsDir)
                 Directory.CreateDirectory(Path.Combine(outputsDir, year, month));
             }
 
-            await Parallel.ForEachAsync(Directory.GetFiles(monthDirss, "*.md"), async (dayFiles, _) =>
+            await Parallel.ForEachAsync(Directory.EnumerateFiles(monthDirss, "*.md"), async (dayFiles, _) =>
             {
                 var day = Path.GetFileNameWithoutExtension(dayFiles);
                 var markdown = await File.ReadAllTextAsync(dayFiles);
 
                 // ./yyyy/mm/dd.html
-                var html = HtmlGenereator.GenerateHtmlFromMarkdown($"{year}年{month}月{day}日", markdown);
+                var html = HtmlGenerator.GenerateHtmlFromMarkdown($"{year}年{month}月{day}日", markdown);
                 await File.WriteAllTextAsync(Path.Combine(outputsDir, year, month, $"{day}.html"), html);
             });
         }
     }
 
     // set up index.html
-    await File.WriteAllTextAsync(Path.Combine(outputsDir, "index.html"), HtmlGenereator.GenerateIndex(archivesDir, outputsDir));
+    await File.WriteAllTextAsync(Path.Combine(outputsDir, "index.html"), HtmlGenerator.GenerateIndex(archivesDir, outputsDir));
 }
 
 internal sealed class PullRequestInfo
