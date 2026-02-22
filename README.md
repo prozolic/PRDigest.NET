@@ -34,6 +34,10 @@ Claude Haiku 4.5
 - [dotnet/runtime](https://github.com/dotnet/runtime)
 - [Claude Docs - Models overview](https://platform.claude.com/docs/en/about-claude/models/overview)
 
+## RSS Feed
+
+https://prozolic.github.io/PRDigest.NET/feed.xml
+
 ## Third-party Notices
 
 ### Material Design Icons
