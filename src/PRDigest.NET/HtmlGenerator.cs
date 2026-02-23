@@ -82,15 +82,25 @@ internal static class HtmlGenerator
                                 <div class="stats-grid">
                                     <div class="stat-card">
                                         <div class="stat-value">{analyzerResult.PullRequestTotalCount}</div>
-                                        <div class="stat-label">マージされたPR</div>
+                                        <div class="stat-label">PR 数（Total）</div>
+                                    </div>
+                                    <div class="stat-card">
+                                        <div class="stat-value">{analyzerResult.PullRequestCountForCommunity}</div>
+                                        <div class="stat-label">PR 数（Community）</div>
+                                    </div>
+                                    <div class="stat-card">
+                                        <div class="stat-value">{analyzerResult.PullRequestCountForAiAgent}</div>
+                                        <div class="stat-label">PR 数（AI Agent）</div>
                                     </div>
                                     <div class="stat-card">
                                         <div class="stat-value">{analyzerResult.PullRequestCountForBot}</div>
-                                        <div class="stat-label">マージされたPR（Bot）</div>
+                                        <div class="stat-label">PR 数（Bot）</div>
                                     </div>
-                                    <div class="stat-card">
+                                </div>
+                                <div class="stats-label-row">
+                                    <div class="stat-card stat-card-label">
                                         <div class="stat-value">{analyzerResult.LabelCount}</div>
-                                        <div class="stat-label">ラベル種類</div>
+                                        <div class="stat-label">ラベルタイプ数</div>
                                     </div>
                                 </div>
                 """;
@@ -218,6 +228,7 @@ internal static class HtmlGenerator
         var builder = new DefaultInterpolatedStringHandler(0, 0);
         builder.AppendLiteral($"<h3>カテゴリ別PR一覧</h3>");
         builder.AppendLiteral(Environment.NewLine);
+
         // Community PRs (expanded)
         var communityCount = analyzerResult.CommunityPullRequestMetadataSpan.Length;
         builder.AppendLiteral($"<details class=\"label-group\">");
@@ -231,6 +242,25 @@ internal static class HtmlGenerator
         builder.AppendLiteral(Environment.NewLine);
 
         foreach (var heading in analyzerResult.CommunityPullRequestMetadataSpan)
+        {
+            AppendHeadingListItem(ref builder, heading);
+        }
+        builder.AppendLiteral("  </ol>");
+        builder.AppendLiteral(Environment.NewLine);
+        builder.AppendLiteral("</details>");
+        builder.AppendLiteral(Environment.NewLine);
+
+        // AI Agent PRs (collapsed)
+        var aiAgentCount = analyzerResult.AiAgentPullRequestMetadataSpan.Length;
+        builder.AppendLiteral("<details class=\"label-group\">");
+        builder.AppendLiteral(Environment.NewLine);
+        builder.AppendLiteral("  <summary class=\"label-group-summary\">AI Agent PRs <span class=\"label-pr-count\">(");
+        builder.AppendFormatted(aiAgentCount);
+        builder.AppendLiteral(" PRs)</span></summary>");
+        builder.AppendLiteral(Environment.NewLine);
+        builder.AppendLiteral("  <ol class=\"label-pr-list\">");
+        builder.AppendLiteral(Environment.NewLine);
+        foreach (var heading in analyzerResult.AiAgentPullRequestMetadataSpan)
         {
             AppendHeadingListItem(ref builder, heading);
         }
@@ -647,9 +677,16 @@ document.addEventListener('DOMContentLoaded', function() {
 
     .stats-grid {
       display: grid;
-      grid-template-columns: repeat(3, 1fr);
+      grid-template-columns: repeat(4, minmax(0, 1fr));
       gap: 16px;
-      margin: 16px 0 24px 0;
+      margin: 16px 0 8px 0;
+    }
+
+    .stats-label-row {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 16px;
+      margin: 0 0 24px 0;
     }
 
     .stat-card {
@@ -658,6 +695,7 @@ document.addEventListener('DOMContentLoaded', function() {
       border-radius: 8px;
       padding: 24px;
       text-align: center;
+      min-width: 0;
     }
 
     .stat-value {
@@ -672,6 +710,7 @@ document.addEventListener('DOMContentLoaded', function() {
       font-size: 14px;
       color: #6b7280;
       margin-top: 4px;
+      overflow-wrap: break-word;
     }
 
     .view-tabs {
@@ -810,6 +849,11 @@ document.addEventListener('DOMContentLoaded', function() {
       summary {
         padding: 1.2em 1em;
         font-size: 16px;
+      }
+
+      .stats-grid,
+      .stats-label-row {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
       }
 
       .stat-value {
