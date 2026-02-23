@@ -2,6 +2,7 @@
 using Markdig.Syntax.Inlines;
 using System.Collections.Frozen;
 using System.Collections.Immutable;
+using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 
@@ -121,7 +122,8 @@ internal static class PullRequestAnalyzer
                         return !string.IsNullOrWhiteSpace(labelText) && !labelText.Contains("ラベル");
                     });
 
-                    currentMetadata = GetMetadata(nextPullRequestNumber, labels);
+                    var mergedAt = ParseDate(metadataList[2]);
+                    currentMetadata = GetMetadata(nextPullRequestNumber, labels, mergedAt);
 
                     foreach (var label in labels ?? [])
                     {
@@ -190,7 +192,30 @@ internal static class PullRequestAnalyzer
             pullRequestInfoTable.ToFrozenDictionary());
     }
 
-    private static Metadata GetMetadata(HeadingBlock heading, IEnumerable<LiteralInline>? labels)
+    private static DateTimeOffset ParseDate(ListItemBlock block)
+    {
+        // example: "マージ日時: 2025年12月22日 20:19:50(UTC)"
+        var text = string.Concat(block.Descendants<LiteralInline>().Select(l => l.Content.ToString()));
+
+        var textSpan = text.AsSpan();
+        var startIndex = textSpan.IndexOf(": ", StringComparison.Ordinal);
+        if (startIndex < 0)
+            throw new FormatException($"Invalid date format: could not find ': ' separator in '{text}'.");
+
+        var endIndex = textSpan.Slice(startIndex + 2).IndexOf("(UTC)", StringComparison.Ordinal);
+        if (endIndex < 0)
+            throw new FormatException($"Invalid date format: could not find '(UTC)' separator in '{text}'.");
+
+        var dateTextSpan = textSpan.Slice(startIndex + 2, endIndex);
+        if (DateTimeOffset.TryParseExact(dateTextSpan, "yyyy年MM月dd日 HH:mm:ss", CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var result))
+        {
+            return result;
+        }
+
+        throw new FormatException($"Invalid date format: could not parse date in '{text}'.");
+    }
+
+    private static Metadata GetMetadata(HeadingBlock heading, IEnumerable<LiteralInline>? labels, DateTimeOffset mergedAt)
     {
         var pullRequestNumber = "";
         var titleText = "";
@@ -233,7 +258,7 @@ internal static class PullRequestAnalyzer
         var anchorId = pullRequestNumber.TrimStart('#');
         var displayText = $"{pullRequestNumber} {titleText.Trim()}";
 
-        return new Metadata(anchorId, displayText, labels?.Select(l => l.ToString()).ToImmutableArray() ?? ImmutableArray<string>.Empty);
+        return new Metadata(anchorId, displayText, labels?.Select(l => l.ToString()).ToImmutableArray() ?? ImmutableArray<string>.Empty, mergedAt);
     }
 
     private static string GetOverview(ContainerInline? inline)
@@ -291,12 +316,18 @@ internal static class PullRequestAnalyzer
         public string Overview => overview;
     }
 
-    public readonly struct Metadata(string pullRequestNumber, string titleText, ImmutableArray<string> labels)
+    public readonly struct Metadata(
+        string pullRequestNumber,
+        string titleText,
+        ImmutableArray<string> labels,
+        DateTimeOffset mergedAt)
     {
         public string PullRequestNumber => pullRequestNumber;
 
         public string TitleText => titleText;
 
         public ImmutableArray<string> Labels => labels;
+
+        public DateTimeOffset MergedAt => mergedAt;
     }
 }
