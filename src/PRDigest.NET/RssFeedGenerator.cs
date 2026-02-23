@@ -89,13 +89,10 @@ internal static class RssFeedGenerator
             builder.AppendLiteral("</guid>");
             builder.AppendLiteral(Environment.NewLine);
 
-            if (DateTimeOffset.TryParseExact(target, "yyyy/MM/dd".AsSpan(), CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.AssumeUniversal, out var date))
-            {
-                builder.AppendLiteral("            <pubDate>");
-                builder.AppendFormatted(date, format: "R");
-                builder.AppendLiteral("</pubDate>");
-                builder.AppendLiteral(Environment.NewLine);
-            }
+            builder.AppendLiteral("            <pubDate>");
+            builder.AppendFormatted(metadata.MergedAt, format: "R");
+            builder.AppendLiteral("</pubDate>");
+            builder.AppendLiteral(Environment.NewLine);
 
             if (summaryGroups.TryGetValue(metadata.PullRequestNumber, out var info))
             {
