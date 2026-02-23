@@ -28,13 +28,13 @@ internal static class PullRequestAnalyzer
         var currentPosition = PullRequestPosition.None;
         var tableOfContents = false;
         var pullRequestTotalCount = 0;
-        var pullRequestCountForBot = 0;
         HeadingBlock? nextPullRequestNumber = null;
         HashSet<string>? pullRequestNumberTable = null;
         Dictionary<string, List<Metadata>> labelTable = [];
         Dictionary<string, string> labelColorMap = [];
         List<Metadata> botPullRequestHeadings = [];
         List<Metadata> communityPrHeadings = [];
+        List<Metadata> aiAgentPullRequestHeadings = [];
         Metadata currentMetadata = default;
         Dictionary<string, Summary> pullRequestInfoTable = [];
 
@@ -132,17 +132,19 @@ internal static class PullRequestAnalyzer
                         prList.Add(currentMetadata);
                     }
 
-                    var user = metadataList[0]?.Descendants<LiteralInline>().Skip(1).FirstOrDefault();
-                    if (user is not null)
+                    var userLiteralInlines = metadataList[0]?.Descendants<LiteralInline>();
+                    if (userLiteralInlines is not null && userLiteralInlines.Any())
                     {
-                        var userName = user.Content.ToString().Trim();
+                        var userName = string.Concat(userLiteralInlines.Select(literal => literal.Content.ToString())).Trim();
 
-                        // check ..[bot].. or @Copilot to count bot PRs
-                        if (userName.EndsWith("[bot]", StringComparison.OrdinalIgnoreCase) ||
-                            userName.IndexOf("@Copilot", StringComparison.OrdinalIgnoreCase) > -1)
+                        // check ..[bot].. to count bot PRs, @Copilot to count AI agent PRs
+                        if (userName.EndsWith("[bot]", StringComparison.OrdinalIgnoreCase))
                         {
-                            pullRequestCountForBot++;
                             botPullRequestHeadings.Add(currentMetadata);
+                        }
+                        else if (userName.IndexOf("@Copilot", StringComparison.OrdinalIgnoreCase) > -1)
+                        {
+                            aiAgentPullRequestHeadings.Add(currentMetadata);
                         }
                         else
                         {
@@ -184,11 +186,11 @@ internal static class PullRequestAnalyzer
 
         return new AnalysisResults(
             pullRequestTotalCount,
-            pullRequestCountForBot,
             labelTable.ToFrozenDictionary(kvp => kvp.Key, kvp => kvp.Value.ToImmutableArray()),
             labelColorMap.ToFrozenDictionary(),
             botPullRequestHeadings,
             communityPrHeadings,
+            aiAgentPullRequestHeadings,
             pullRequestInfoTable.ToFrozenDictionary());
     }
 
@@ -294,20 +296,24 @@ internal static class PullRequestAnalyzer
 
     public sealed class AnalysisResults(
         int pullRequestTotalCount,
-        int pullRequestCountForBot,
         FrozenDictionary<string, ImmutableArray<Metadata>> labelMap,
         FrozenDictionary<string, string> labelColorMap,
         List<Metadata> botPullRequestMetadata,
         List<Metadata> communityPullRequestMetadata,
+        List<Metadata> aiAgentPullRequestMetadata,
         FrozenDictionary<string, Summary> summaryMap)
     {
         public int PullRequestTotalCount => pullRequestTotalCount;
-        public int PullRequestCountForBot => pullRequestCountForBot;
+
+        public int PullRequestCountForCommunity => communityPullRequestMetadata.Count;
+        public int PullRequestCountForBot => botPullRequestMetadata.Count;
+        public int PullRequestCountForAiAgent => aiAgentPullRequestMetadata.Count;
         public FrozenDictionary<string, ImmutableArray<Metadata>> LabelMap => labelMap;
         public FrozenDictionary<string, string> LabelColorGroups => labelColorMap;
         public int LabelCount => LabelMap.Count;
         public ReadOnlySpan<Metadata> CommunityPullRequestMetadataSpan => CollectionsMarshal.AsSpan(communityPullRequestMetadata);
         public ReadOnlySpan<Metadata> BotPullRequestMetadataSpan => CollectionsMarshal.AsSpan(botPullRequestMetadata);
+        public ReadOnlySpan<Metadata> AiAgentPullRequestMetadataSpan => CollectionsMarshal.AsSpan(aiAgentPullRequestMetadata);
         public FrozenDictionary<string, Summary> SummaryMap => summaryMap;
     }
 
