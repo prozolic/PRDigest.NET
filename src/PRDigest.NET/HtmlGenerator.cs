@@ -612,6 +612,31 @@ document.addEventListener('DOMContentLoaded', function() {
       border-radius: 0;
     }
 
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 16px 0;
+      font-size: 14px;
+      color: #374151;
+    }
+
+    th {
+      background: #f3f4f6;
+      color: #1a1a1a;
+      font-weight: 600;
+      text-align: left;
+      padding: 10px 14px;
+      border: 1px solid #e5e7eb;
+      overflow-wrap: break-word;
+    }
+
+    td {
+      padding: 8px 14px;
+      border: 1px solid #e5e7eb;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+
     details {
       margin: 0px 0px 8px 0px;
       background-color: #f5f5f5;
@@ -926,6 +951,17 @@ document.addEventListener('DOMContentLoaded', function() {
       pre {
         background: #111827;
         border-color: #374151;
+      }
+
+      th {
+        background: #374151;
+        color: #f9fafb;
+        border-color: #4b5563;
+      }
+
+      td {
+        border-color: #4b5563;
+        color: #d1d5db;
       }
 
       .stat-card {
