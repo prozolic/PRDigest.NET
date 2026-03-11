@@ -61,7 +61,7 @@ internal static partial class PromptGenerator
         "Copilot encountered an error and was unable to review this pull request"
     };
 
-    private static readonly SearchValues<string> searchValues = SearchValues.Create(EmptyReviewComment, StringComparison.Ordinal);
+    private static readonly SearchValues<string> EmptyReviewCommentSearchValues = SearchValues.Create(EmptyReviewComment, StringComparison.Ordinal);
 
     [GeneratedRegex(@"^\s*(##\s*Pull request overview\s*)?Copilot reviewed \d+ out of \d+ changed files in this pull request and generated \d+ comments\.\s*$")]
     private static partial Regex ReviewedOutOfRegex();
@@ -123,7 +123,7 @@ Copilotによる概要:
             .Where(r => 
                 r.User.Login == "copilot-pull-request-reviewer[bot]" &&
                 r.Body.Length > 0 &&
-                !r.Body.AsSpan().ContainsAny(searchValues) && 
+                !r.Body.AsSpan().ContainsAny(EmptyReviewCommentSearchValues) && 
                 !ReviewedOutOfRegex().IsMatch(r.Body)
                 )
             .OrderBy(r => r.SubmittedAt)
