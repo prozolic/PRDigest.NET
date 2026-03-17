@@ -465,7 +465,13 @@ document.addEventListener('DOMContentLoaded', function() {
     // Sync top with .content's visible top, clamped to stay inside viewport
     var top = Math.max(0, rect.top);
     toc.style.top = top + 'px';
-    toc.style.maxHeight = 'calc(100vh - ' + top + 'px)';
+
+    // Constrain maxHeight so the TOC does not overlap the footer
+    var footer = document.querySelector('footer');
+    var footerRect = footer.getBoundingClientRect();
+    var gap = footerRect.top - rect.bottom;
+    var bottomBound = footer ? Math.min(window.innerHeight, footerRect.top - gap) : window.innerHeight;
+    toc.style.maxHeight = Math.max(100, bottomBound - top) + 'px';
 
     // Left edge: only on wide screens where the sidebar is shown
     if (window.innerWidth >= 1600) {
