@@ -114,7 +114,13 @@ internal static class HtmlGenerator
                             """;
         }
 
-        return GenerateTemplateHtml($"PR Digest.NET", "dotnet/runtimeにマージされたPull RequestをAIで日本語要約", latestPullRequestInfo + detailsBuilder.ToStringAndClear());
+        return GenerateTemplateHtml(
+            title: $"PR Digest.NET", 
+            subTitle: "dotnet/runtimeにマージされたPull RequestをAIで日本語要約", 
+            content: latestPullRequestInfo + detailsBuilder.ToStringAndClear(), 
+            viewScript: GenerateViewScript(),
+            floatingTocHtml: "",
+            floatingTocScript: "");
     }
 
     public static string GenerateHtmlFromMarkdown(string startTargetDate, string markdownContent)
@@ -155,6 +161,21 @@ internal static class HtmlGenerator
         var categoryViewHtml = GenerateCategorizedTocHtml(analyzerResult);
         var labelViewHtml = GenerateLabelViewHtml(analyzerResult);
 
+        // Extract <ol> part from tocHtml for floating TOC
+        var floatingTocSpan = tocHtml.AsSpan();
+        var olStart = floatingTocSpan.IndexOf("<ol>", StringComparison.Ordinal);
+        var floatingTocOlHtml = olStart >= 0 ? floatingTocSpan[olStart..].ToString() : "";
+
+        var floatingTocHtml = string.IsNullOrEmpty(floatingTocOlHtml) ? "" : $"""
+<div id="floating-toc" class="floating-toc">
+  <div class="floating-toc-header">目次</div>
+  <nav class="floating-toc-nav">
+    {floatingTocOlHtml}
+  </nav>
+</div>
+<div id="toc-backdrop" class="toc-backdrop"></div>
+""";
+
         var content = $"""
       <h2>注意点</h2>
       <p>このページは、<a href="https://github.com/dotnet/runtime">dotnet/runtime</a>リポジトリにマージされたPull Requestを自動的に収集し、その内容をAIが要約した内容を表示しています。そのため、必ずしも正確な要約ではない場合があります。</p>
@@ -176,7 +197,13 @@ internal static class HtmlGenerator
       {prDetailsHtml}
 """;
 
-        return GenerateTemplateHtml($"Pull Request on {startTargetDate}", "dotnet/runtimeにマージされたPull RequestをAIで日本語要約", content, includeViewScript: true);
+        return GenerateTemplateHtml(
+            title: $"Pull Request on {startTargetDate}", 
+            subTitle: "dotnet/runtimeにマージされたPull RequestをAIで日本語要約", 
+            content: content,
+            viewScript: GenerateViewScript(), 
+            floatingTocHtml: floatingTocHtml,
+            floatingTocScript: GenerateFloatingTocScript());
     }
 
     private static string GenerateLabelViewHtml(PullRequestAnalyzer.AnalysisResults analyzerResult)
@@ -197,7 +224,9 @@ internal static class HtmlGenerator
             {
                 builder.AppendLiteral(" style=\"background-color: ");
                 builder.AppendLiteral(color);
-                builder.AppendLiteral("; color: #000000; display: inline-block; padding: 0 7px; font-size: 12px; font-weight: 500; line-height: 18px; border-radius: 2em; border: 1px solid transparent;\"");
+                builder.AppendLiteral("; color: ");
+                builder.AppendLiteral(GitHubLabalColor.GetFontColor(color));
+                builder.AppendLiteral("; display: inline-block; padding: 0 7px; font-size: 12px; font-weight: 500; line-height: 18px; border-radius: 2em; border: 1px solid transparent;\"");
             }
             builder.AppendLiteral(">");
             builder.AppendLiteral(labelName);
@@ -302,9 +331,8 @@ internal static class HtmlGenerator
         builder.AppendLiteral(Environment.NewLine);
     }
 
-    private static string GenerateTemplateHtml(string title, string subTitle, string content, bool includeViewScript = false)
+    private static string GenerateTemplateHtml(string title, string subTitle, string content, string viewScript, string floatingTocHtml, string floatingTocScript)
     {
-        var viewScript = includeViewScript ? GenerateViewScript() : "";
         return $$"""
 <!DOCTYPE html>
 <html lang="ja">
@@ -390,6 +418,8 @@ internal static class HtmlGenerator
   </div>
 </footer>
 {{viewScript}}
+{{floatingTocHtml}}
+{{floatingTocScript}}
 </body>
 </html>
 """;
@@ -417,6 +447,108 @@ document.addEventListener('DOMContentLoaded', function() {
 """;
     }
 
+    private static string GenerateFloatingTocScript()
+    {
+        return """
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+  var toc = document.getElementById('floating-toc');
+  var backdrop = document.getElementById('toc-backdrop');
+  if (!toc) return;
+
+  function alignTocToContent() {
+    var content = document.querySelector('.content');
+    if (!content) return;
+
+    var rect = content.getBoundingClientRect();
+
+    // Sync top with .content's visible top, clamped to stay inside viewport
+    var top = Math.max(0, rect.top);
+    toc.style.top = top + 'px';
+    toc.style.maxHeight = 'calc(100vh - ' + top + 'px)';
+
+    // Left edge: only on wide screens where the sidebar is shown
+    if (window.innerWidth >= 1600) {
+      toc.style.left = (rect.right + 8) + 'px';
+      toc.style.right = 'auto';
+    } else {
+      toc.style.left = '';
+      toc.style.right = '';
+    }
+  }
+
+  alignTocToContent();
+  window.addEventListener('resize', alignTocToContent);
+  window.addEventListener('scroll', alignTocToContent, { passive: true });
+
+  // --- Active heading tracking (Zenn-style) ---
+  var headings = Array.from(document.querySelectorAll('h2[id], h3[id]'));
+  var tocLinks = Array.from(toc.querySelectorAll('a[href^="#"]'));
+  var visibilityMap = new Map();
+
+  function setActiveLink(id) {
+    tocLinks.forEach(function(a) {
+      var isActive = a.getAttribute('href') === '#' + id;
+      a.classList.toggle('toc-active', isActive);
+      if (isActive) {
+        // Auto-scroll the TOC nav so the active item stays visible
+        var nav = toc.querySelector('.floating-toc-nav');
+        if (nav) {
+          var aTop = a.offsetTop;
+          var navHeight = nav.clientHeight;
+          if (aTop < nav.scrollTop || aTop > nav.scrollTop + navHeight - 32) {
+            nav.scrollTop = aTop - navHeight / 2;
+          }
+        }
+      }
+    });
+  }
+
+  var observer = new IntersectionObserver(function(entries) {
+    entries.forEach(function(entry) {
+      visibilityMap.set(entry.target.id, entry.isIntersecting);
+    });
+
+    // First visible heading in document order
+    var activeId = null;
+    for (var i = 0; i < headings.length; i++) {
+      if (visibilityMap.get(headings[i].id)) {
+        activeId = headings[i].id;
+        break;
+      }
+    }
+
+    // If none visible, use last heading above viewport
+    if (!activeId) {
+      for (var i = headings.length - 1; i >= 0; i--) {
+        if (headings[i].getBoundingClientRect().top < 0) {
+          activeId = headings[i].id;
+          break;
+        }
+      }
+    }
+
+    if (activeId) setActiveLink(activeId);
+  }, { rootMargin: '0px 0px -80% 0px' });
+
+  headings.forEach(function(h) { observer.observe(h); });
+  // --- End active heading tracking ---
+
+  function closeToc() {
+    toc.classList.remove('open');
+    backdrop.classList.remove('visible');
+  }
+
+  backdrop.addEventListener('click', closeToc);
+
+  tocLinks.forEach(function(a) {
+    a.addEventListener('click', closeToc);
+  });
+});
+</script>
+""";
+    }
+
     private static string GenerateCssStyle()
     {
         return $$"""
@@ -431,9 +563,12 @@ document.addEventListener('DOMContentLoaded', function() {
     body {
       margin: 0;
       padding: 0;
+      overflow-x: hidden;
       font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans JP", "Hiragino Kaku Gothic ProN", Meiryo, sans-serif;
       font-size: 16px;
+      font-feature-settings: "palt" 1;
       line-height: 1.8;
+      letter-spacing: 0.05em;
       color: #333;
       background-color: #f9fafb;
     }
@@ -771,6 +906,8 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 
     .label-group-summary {
+      display: flex;
+      flex-wrap: wrap;
       align-items: center;
       gap: 8px;
     }
@@ -861,6 +998,11 @@ document.addEventListener('DOMContentLoaded', function() {
 
       li {
         word-break: break-word;
+        overflow-wrap: anywhere;
+      }
+
+      li > span[style*="border-radius:2em"] {
+        white-space: normal !important;
         overflow-wrap: anywhere;
       }
 
@@ -1010,6 +1152,117 @@ document.addEventListener('DOMContentLoaded', function() {
       .label-pr-list li a:hover {
         color: #93c5fd;
       }
+    }
+
+    .floating-toc {
+      position: fixed;
+      top: 220px;
+      right: 12px;
+      width: 200px;
+      max-height: calc(100vh - 220px);
+      overflow-y: auto;
+      background: #fff;
+      border-radius: 8px;
+      padding: 12px;
+      z-index: 200;
+      display: none;
+    }
+
+    .floating-toc-header {
+      font-weight: 700;
+      font-size: 13px;
+      padding-bottom: 8px;
+      margin-bottom: 8px;
+      border-bottom: 1px solid #e5e7eb;
+      color: #1a1a1a;
+    }
+
+    .floating-toc-nav ol {
+      padding-left: 14px;
+      margin: 0;
+    }
+
+    .floating-toc-nav ol li {
+      font-weight: normal;
+      padding: 2px 0;
+      font-size: 12px;
+    }
+
+    .floating-toc-nav ol li {
+      border-left: 2px solid transparent;
+      padding-left: 6px;
+    }
+
+    .floating-toc-nav ol li a {
+      display: block;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      color: #6b7280;
+      text-decoration: none;
+      line-height: 1.5;
+      transition: color 0.15s;
+    }
+
+    .floating-toc-nav ol li a:hover {
+      color: #2563eb;
+      text-decoration: none;
+    }
+
+    .floating-toc-nav ol li:has(a.toc-active) {
+      border-left-color: #2563eb;
+    }
+
+    .floating-toc-nav ol li a.toc-active {
+      color: #2563eb;
+      font-weight: 700;
+    }
+
+    .toc-backdrop {
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.35);
+      z-index: 190;
+      display: none;
+    }
+
+    .toc-backdrop.visible { display: block; }
+
+    @media (min-width: 1600px) {
+      .floating-toc { display: block; }
+    }
+
+    @media (max-width: 1599px) {
+      .floating-toc.open {
+        display: block;
+        top: 0;
+        right: 0;
+        height: 100vh;
+        max-height: 100vh;
+        width: min(280px, 85vw);
+        border-radius: 0;
+        border-top: none;
+        border-bottom: none;
+        border-right: none;
+        padding-top: 24px;
+      }
+    }
+
+    @media (prefers-color-scheme: dark) {
+      .floating-toc {
+        background: #1f2937;
+        border-color: #374151;
+      }
+
+      .floating-toc-header {
+        color: #f9fafb;
+        border-bottom-color: #374151;
+      }
+
+      .floating-toc-nav ol li a { color: #9ca3af; }
+      .floating-toc-nav ol li a:hover { color: #60a5fa; }
+      .floating-toc-nav ol li a.toc-active { color: #60a5fa; }
+      .floating-toc-nav ol li:has(a.toc-active) { border-left-color: #60a5fa; }
     }
 """;
     }

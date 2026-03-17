@@ -224,7 +224,7 @@ async ValueTask<string> SummarizePullRequestAsync(PullRequestInfo[] pullRequestI
 
             var labels = pr.PullRequest.Labels;
             var labelText = labels.Count > 0 ?
-                string.Join(" ", labels.Select(label => $"<span style=\"background-color: #{label.Color}; color: #000000; display: inline-block; padding: 0 7px; font-size:12px; font-weight:500; line-height:18px; border-radius:2em; border:1px solid transparent; white-space:nowrap; cursor:default;\">{label.Name}</span>")) :
+                string.Join(" ", labels.Select(label => $"<span style=\"background-color: #{label.Color}; color: {GitHubLabalColor.GetFontColor(label.Color)}; display: inline-block; padding: 0 7px; font-size:12px; font-weight:500; line-height:18px; border-radius:2em; border:1px solid transparent; cursor:default;\">{label.Name}</span>")) :
                 "指定なし";
 
             var prHeader = $$"""
