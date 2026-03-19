@@ -220,7 +220,8 @@ async ValueTask<string> SummarizePullRequestAsync(PullRequestInfo[] pullRequestI
                 }
             }
 
-            tableOfContentsBuilder.AppendLine($"{index++}. [#{pr.Issue.Number} {TitleHelper.EscapedTitle(pr.Issue.Title)}](#{pr.Issue.Number})");
+            var title = TitleHelper.EscapedTitle(pr.Issue.Title);
+            tableOfContentsBuilder.AppendLine($"{index++}. [#{pr.Issue.Number} {title}](#{pr.Issue.Number})");
 
             var labels = pr.PullRequest.Labels;
             var labelText = labels.Count > 0 ?
@@ -228,7 +229,7 @@ async ValueTask<string> SummarizePullRequestAsync(PullRequestInfo[] pullRequestI
                 "指定なし";
 
             var prHeader = $$"""
-### [#{{pr.Issue.Number}}]({{pr.Issue.HtmlUrl}}) {{pr.Issue.Title}} {#{{pr.Issue.Number}}}
+### [#{{pr.Issue.Number}}]({{pr.Issue.HtmlUrl}}) {{title}} {#{{pr.Issue.Number}}}
 - 作成者: [@{{pr.Issue.User.Login}}]({{pr.Issue.User.HtmlUrl}})
 - 作成日時: {{pr.Issue.CreatedAt:yyyy年MM月dd日 HH:mm:ss}}(UTC)
 - マージ日時: {{pr.PullRequest.MergedAt:yyyy年MM月dd日 HH:mm:ss}}(UTC)
