@@ -5,7 +5,7 @@ namespace PRDigest.NET;
 
 internal static class TitleHelper
 {
-    private static readonly SearchValues<char> EscapedChars = SearchValues.Create("[]()");
+    private static readonly SearchValues<char> EscapedChars = SearchValues.Create("[]()<>");
 
     public static string EscapedTitle(string title)
     {
@@ -18,7 +18,7 @@ internal static class TitleHelper
         for (int i = 0; i < title.Length; i++)
         {
             char c = title[i];
-            if (c is '[' or ']' or '(' or ')')
+            if (c is '[' or ']' or '(' or ')' or '<' or '>')
             {
                 handler.AppendLiteral("\\");
             }
