@@ -40,14 +40,58 @@ https://prozolic.github.io/PRDigest.NET/feed.xml
 
 ## Third-party Notices
 
-### Material Design Icons
+### C#
+
+#### Markdig
+
+- Version: 1.1.2
+- URL: https://github.com/xoofx/markdig
+- Copyright (c) 2018-2019, Alexandre Mutel
+- Licensed under the [BSD 2-Clause License](https://github.com/xoofx/markdig/blob/main/license.txt)
+
+#### Octokit\.NET
+
+- Version: 14.0.0
+- URL: https://github.com/octokit/octokit.net
+- Copyright (c) 2017 GitHub, Inc.
+- Licensed under the [MIT License](https://github.com/octokit/octokit.net/blob/main/LICENSE.txt)
+
+#### Anthropic SDK for C\#
+
+- Version: 12.9.0
+- URL: https://github.com/anthropics/anthropic-sdk-csharp
+- Copyright 2023 Anthropic, PBC.
+- Licensed under the [MIT License](https://github.com/anthropics/anthropic-sdk-csharp/blob/main/LICENSE)
+
+### HTML
+
+#### Inter
+
+- URL: https://github.com/rsms/inter
+- Copyright (c) 2016 The Inter Project Authors
+- Licensed under the [SIL Open Font License, Version 1.1](https://github.com/rsms/inter/blob/master/LICENSE.txt)
+
+#### JetBrains Mono
+
+- URL: https://github.com/JetBrains/JetBrainsMono
+- Copyright 2020 The JetBrains Mono Project Authors
+- Licensed under the [SIL Open Font License, Version 1.1](https://github.com/JetBrains/JetBrainsMono/blob/master/OFL.txt)
+
+#### Prism
+
+- Version: 1.29.0
+- URL: https://github.com/PrismJS/prism
+- Copyright (c) 2012 Lea Verou
+- Licensed under the [MIT License](https://github.com/PrismJS/prism/blob/master/LICENSE)
+
+#### Material Design Icons
 
 - Icon: rss
 - URL: https://pictogrammers.com/library/mdi/icon/rss/
 - Copyright (c) 2014 Austin Andrews (https://templarian.com/)
 - Licensed under the [Apache License, Version 2.0](https://github.com/Templarian/MaterialDesign/blob/master/LICENSE)
 
-### GitHub Octicons
+#### GitHub Octicons
 
 - Icon: mark-github
 - URL: https://github.com/primer/octicons/blob/main/icons/mark-github-24.svg
