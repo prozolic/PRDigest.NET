@@ -15,10 +15,18 @@ internal static class TitleHelper
         var handler = new DefaultInterpolatedStringHandler(0, 0);
 
         Span<char> buffer = stackalloc char[1];
+        bool insideCodeSpan = false;
         for (int i = 0; i < title.Length; i++)
         {
             char c = title[i];
-            if (c is '[' or ']' or '(' or ')' or '<' or '>')
+            if (c == '`')
+            {
+                insideCodeSpan = !insideCodeSpan;
+                buffer[0] = c;
+                handler.AppendFormatted(buffer);
+                continue;
+            }
+            if (!insideCodeSpan && c is '[' or ']' or '(' or ')' or '<' or '>')
             {
                 handler.AppendLiteral("\\");
             }
