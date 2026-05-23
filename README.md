@@ -44,7 +44,7 @@ https://prozolic.github.io/PRDigest.NET/feed.xml
 
 #### Markdig
 
-- Version: 1.1.2
+- Version: 1.2.0
 - URL: https://github.com/xoofx/markdig
 - Copyright (c) 2018-2019, Alexandre Mutel
 - Licensed under the [BSD 2-Clause License](https://github.com/xoofx/markdig/blob/main/license.txt)
@@ -58,7 +58,7 @@ https://prozolic.github.io/PRDigest.NET/feed.xml
 
 #### Anthropic SDK for C\#
 
-- Version: 12.9.0
+- Version: 12.23.0
 - URL: https://github.com/anthropics/anthropic-sdk-csharp
 - Copyright 2023 Anthropic, PBC.
 - Licensed under the [MIT License](https://github.com/anthropics/anthropic-sdk-csharp/blob/main/LICENSE)
