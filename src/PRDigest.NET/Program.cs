@@ -33,10 +33,6 @@ Console.WriteLine($"Total elapsed time: {TimeProvider.System.GetElapsedTime(star
 async ValueTask SummarizeCurrentPullRequestAndCreate(string archivesDir, string outputsDir)
 {
     // Target dotnet/runtime.
-    const string OWNER = "dotnet";
-    const string REPO = "runtime";
-    const string FullRepo = $"{OWNER}/{REPO}";
-
     // 24-hour time range for the previous day.
     var currentDate = TimeProvider.System.GetUtcNow();
     var previousDate = currentDate.AddDays(-1);
@@ -63,10 +59,10 @@ async ValueTask SummarizeCurrentPullRequestAndCreate(string archivesDir, string 
     var pullRequestInfos = await GetAllPullRequestInfoAsync(startTargetDate, endTargetDate);
     if (pullRequestInfos.Length == 0)
     {
-        Console.WriteLine($"There were no PRs merged into {FullRepo} between {startTargetDate:yyyy/MM/dd HH:mm:ss} and {endTargetDate:yyyy/MM/dd HH:mm:ss}.");
+        Console.WriteLine($"There were no PRs merged into {Constants.FullRepository} between {startTargetDate:yyyy/MM/dd HH:mm:ss} and {endTargetDate:yyyy/MM/dd HH:mm:ss}.");
         return;
     }
-    Console.WriteLine($"{pullRequestInfos.Length} pull requests into {FullRepo} were merged between {startTargetDate:yyyy/MM/dd HH:mm:ss} and {endTargetDate:yyyy/MM/dd HH:mm:ss}.");
+    Console.WriteLine($"{pullRequestInfos.Length} pull requests into {Constants.FullRepository} were merged between {startTargetDate:yyyy/MM/dd HH:mm:ss} and {endTargetDate:yyyy/MM/dd HH:mm:ss}.");
 
     // Generate HTML content for each pull request using Anthropic API.
     var markdown = await SummarizePullRequestAsync(pullRequestInfos);
@@ -119,15 +115,11 @@ bool ExistSummaryForSpecifiedDate(string archivesDir, string year, string month,
 async ValueTask<PullRequestInfo[]> GetAllPullRequestInfoAsync(DateTimeOffset startTargetDate, DateTimeOffset endTargetDate)
 {
     // Target dotnet/runtime.
-    const string OWNER = "dotnet";
-    const string REPO = "runtime";
-    const string FullRepo = $"{OWNER}/{REPO}";
-
     // Create search request for merged pull requests in the specified date range
     var searchRequest = new SearchIssuesRequest()
     {
         Type = IssueTypeQualifier.PullRequest,
-        Repos = [FullRepo],
+        Repos = [Constants.FullRepository],
         State = ItemState.Closed,
         Merged = DateRange.Between(startTargetDate, endTargetDate),
         Is = [IssueIsQualifier.Merged]
@@ -154,10 +146,10 @@ async ValueTask<PullRequestInfo[]> GetAllPullRequestInfoAsync(DateTimeOffset sta
     for (var i = 0; i < searchIssueResult.Items.Count; i++)
     {
         var pr = searchIssueResult.Items[i];
-        var pullRequestTask = githubClient.PullRequest.Get(OWNER, REPO, pr.Number);
-        var filesTask = githubClient.PullRequest.Files(OWNER, REPO, pr.Number);
-        var issueCommentsTask = githubClient.Issue.Comment.GetAllForIssue(OWNER, REPO, pr.Number);
-        var reviewsTask = githubClient.PullRequest.Review.GetAll(OWNER, REPO, pr.Number);
+        var pullRequestTask = githubClient.PullRequest.Get(Constants.Owner, Constants.Repository, pr.Number);
+        var filesTask = githubClient.PullRequest.Files(Constants.Owner, Constants.Repository, pr.Number);
+        var issueCommentsTask = githubClient.Issue.Comment.GetAllForIssue(Constants.Owner, Constants.Repository, pr.Number);
+        var reviewsTask = githubClient.PullRequest.Review.GetAll(Constants.Owner, Constants.Repository, pr.Number);
 
         pullRequestInfos[i] = new PullRequestInfo
         {

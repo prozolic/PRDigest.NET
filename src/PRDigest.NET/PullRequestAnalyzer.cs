@@ -257,10 +257,13 @@ internal static class PullRequestAnalyzer
             inline = inline.NextSibling;
         }
 
-        var anchorId = pullRequestNumber.TrimStart('#');
         var displayText = $"{pullRequestNumber} {titleText.Trim()}";
 
-        return new Metadata(anchorId, displayText, labels?.Select(l => l.ToString()).ToImmutableArray() ?? ImmutableArray<string>.Empty, mergedAt);
+        return new Metadata(
+            pullRequestNumber.TrimStart('#'), 
+            displayText, 
+            labels?.Select(l => l.ToString()).ToImmutableArray() ?? ImmutableArray<string>.Empty, 
+            mergedAt);
     }
 
     private static string GetOverview(ContainerInline? inline)
@@ -300,20 +303,20 @@ internal static class PullRequestAnalyzer
         FrozenDictionary<string, string> labelColorMap,
         List<Metadata> botPullRequestMetadata,
         List<Metadata> communityPullRequestMetadata,
-        List<Metadata> aiAgentPullRequestMetadata,
+        List<Metadata> agentPullRequestMetadata,
         FrozenDictionary<string, Summary> summaryMap)
     {
         public int PullRequestTotalCount => pullRequestTotalCount;
 
         public int PullRequestCountForCommunity => communityPullRequestMetadata.Count;
         public int PullRequestCountForBot => botPullRequestMetadata.Count;
-        public int PullRequestCountForAiAgent => aiAgentPullRequestMetadata.Count;
+        public int PullRequestCountForAiAgent => agentPullRequestMetadata.Count;
         public FrozenDictionary<string, ImmutableArray<Metadata>> LabelMap => labelMap;
         public FrozenDictionary<string, string> LabelColorGroups => labelColorMap;
         public int LabelCount => LabelMap.Count;
         public ReadOnlySpan<Metadata> CommunityPullRequestMetadataSpan => CollectionsMarshal.AsSpan(communityPullRequestMetadata);
         public ReadOnlySpan<Metadata> BotPullRequestMetadataSpan => CollectionsMarshal.AsSpan(botPullRequestMetadata);
-        public ReadOnlySpan<Metadata> AiAgentPullRequestMetadataSpan => CollectionsMarshal.AsSpan(aiAgentPullRequestMetadata);
+        public ReadOnlySpan<Metadata> AgentPullRequestMetadataSpan => CollectionsMarshal.AsSpan(agentPullRequestMetadata);
         public FrozenDictionary<string, Summary> SummaryMap => summaryMap;
     }
 
