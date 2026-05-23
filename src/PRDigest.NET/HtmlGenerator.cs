@@ -132,8 +132,8 @@ internal static class HtmlGenerator
         // The TOC ends after </ol>, then a <hr /> separates it from PR details
         var contentSpan = contentHtml.AsSpan();
         var tocEndIndex = contentSpan.IndexOf("</ol>", StringComparison.Ordinal);
-        string tocHtml;
-        string prDetailsHtml;
+        ReadOnlySpan<char> tocHtml;
+        ReadOnlySpan<char> prDetailsHtml;
 
         if (tocEndIndex >= 0)
         {
@@ -141,13 +141,13 @@ internal static class HtmlGenerator
             var hrIndex = contentSpan[tocEndIndex..].IndexOf("<hr", StringComparison.Ordinal);
             if (hrIndex >= 0)
             {
-                tocHtml = contentSpan[..tocEndIndex].ToString();
-                prDetailsHtml = contentSpan[(tocEndIndex + hrIndex)..].ToString();
+                tocHtml = contentSpan[..tocEndIndex];
+                prDetailsHtml = contentSpan[(tocEndIndex + hrIndex)..];
             }
             else
             {
-                tocHtml = contentSpan[..tocEndIndex].ToString();
-                prDetailsHtml = contentSpan[tocEndIndex..].ToString();
+                tocHtml = contentSpan[..tocEndIndex];
+                prDetailsHtml = contentSpan[tocEndIndex..];
             }
         }
         else
@@ -162,7 +162,7 @@ internal static class HtmlGenerator
         var labelViewHtml = GenerateLabelViewHtml(analyzerResult);
 
         // Extract <ol> part from tocHtml for floating TOC
-        var floatingTocSpan = tocHtml.AsSpan();
+        var floatingTocSpan = tocHtml;
         var olStart = floatingTocSpan.IndexOf("<ol>", StringComparison.Ordinal);
         var floatingTocOlHtml = olStart >= 0 ? floatingTocSpan[olStart..].ToString() : "";
 
@@ -280,7 +280,7 @@ internal static class HtmlGenerator
         builder.AppendLiteral(Environment.NewLine);
 
         // AI Agent PRs (collapsed)
-        var aiAgentCount = analyzerResult.AiAgentPullRequestMetadataSpan.Length;
+        var aiAgentCount = analyzerResult.AgentPullRequestMetadataSpan.Length;
         builder.AppendLiteral("<details class=\"label-group\">");
         builder.AppendLiteral(Environment.NewLine);
         builder.AppendLiteral("  <summary class=\"label-group-summary\">AI Agent PRs <span class=\"label-pr-count\">(");
@@ -289,7 +289,7 @@ internal static class HtmlGenerator
         builder.AppendLiteral(Environment.NewLine);
         builder.AppendLiteral("  <ol class=\"label-pr-list\">");
         builder.AppendLiteral(Environment.NewLine);
-        foreach (var heading in analyzerResult.AiAgentPullRequestMetadataSpan)
+        foreach (var heading in analyzerResult.AgentPullRequestMetadataSpan)
         {
             AppendHeadingListItem(ref builder, heading);
         }

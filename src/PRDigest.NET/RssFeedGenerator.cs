@@ -53,6 +53,10 @@ internal static class RssFeedGenerator
         {
             AppendItem(ref itemBuilder, target, analysisResult.SummaryMap, metadata);
         }
+        foreach (var metadata in analysisResult.AgentPullRequestMetadataSpan)
+        {
+            AppendItem(ref itemBuilder, target, analysisResult.SummaryMap, metadata);
+        }
 
         static void AppendItem(ref DefaultInterpolatedStringHandler builder, string target, FrozenDictionary<string, PullRequestAnalyzer.Summary> summaryGroups, PullRequestAnalyzer.Metadata metadata)
         {
