@@ -1,6 +1,6 @@
 ﻿using Markdig;
+using Markdig.Helpers;
 using System.Buffers;
-using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Text.Encodings.Web;
 
@@ -8,19 +8,32 @@ namespace PRDigest.NET;
 
 internal static class HtmlGenerator
 {
-    private static readonly StringComparer NumericOrderingComparer = StringComparer.Create(CultureInfo.InvariantCulture, CompareOptions.NumericOrdering);
+    private static readonly SearchValues<char> AllowedLabelPathChars =
+        SearchValues.Create("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-");
+
+    private static bool IsYearDirectoryName(string path)
+    {
+        var name = Path.GetFileName(path);
+        if (name.Length == 4)
+        {
+            var nameSpan = name.AsSpan();
+            return nameSpan[0].IsDigit() && nameSpan[1].IsDigit() && nameSpan[2].IsDigit() && nameSpan[3].IsDigit();
+        }
+        return false;
+    }
 
     public static string GenerateIndex(string archivesDir, string outputsDir)
     {
-        var comparer = NumericOrderingComparer;
+        var comparer = StringComparerOptions.DefaultComparer;
 
+        var yearDirs = Directory.GetDirectories(outputsDir).Where(IsYearDirectoryName).OrderDescending(comparer).ToArray();
         var detailsBuilder = new DefaultInterpolatedStringHandler(0, 0);
-        foreach (var yearDirs in Directory.GetDirectories(outputsDir).OrderDescending(comparer))
+        foreach (var yearDir in yearDirs)
         {
-            var year = Path.GetFileName(yearDirs);
-            foreach (var monthDirss in Directory.GetDirectories(yearDirs).OrderDescending(comparer))
+            var year = Path.GetFileName(yearDir);
+            foreach (var monthDir in Directory.GetDirectories(yearDir).OrderDescending(comparer))
             {
-                var month = Path.GetFileName(monthDirss);
+                var month = Path.GetFileName(monthDir);
                 detailsBuilder.AppendLiteral("<details>");
                 detailsBuilder.AppendLiteral(Environment.NewLine);
                 detailsBuilder.AppendLiteral("   <summary>");
@@ -33,7 +46,7 @@ internal static class HtmlGenerator
                 detailsBuilder.AppendLiteral($"   <ul class=\"daylist\">");
                 detailsBuilder.AppendLiteral(Environment.NewLine);
 
-                foreach (var htmlPath in Directory.GetFiles(monthDirss, "*.html").Order(comparer))
+                foreach (var htmlPath in Directory.GetFiles(monthDir, "*.html").Order(comparer))
                 {
                     detailsBuilder.AppendLiteral($"     <li class=\"dayitem\"><a href=\"./");
                     detailsBuilder.AppendLiteral(year);
@@ -59,12 +72,12 @@ internal static class HtmlGenerator
         }
 
         var latestPullRequestInfo = "";
-        var lastedYearDirs = Directory.GetDirectories(outputsDir).OrderDescending(comparer).FirstOrDefault();
-        if (!string.IsNullOrWhiteSpace(lastedYearDirs))
+        var latestYearDir = yearDirs.Length > 0 ? yearDirs[0] : null;
+        if (!string.IsNullOrWhiteSpace(latestYearDir))
         {
 
-            var lastedYear = Path.GetFileName(lastedYearDirs);
-            var lastedMonthDirs = Directory.GetDirectories(lastedYearDirs!).OrderDescending(comparer).FirstOrDefault();
+            var lastedYear = Path.GetFileName(latestYearDir);
+            var lastedMonthDirs = Directory.GetDirectories(latestYearDir!).OrderDescending(comparer).FirstOrDefault();
             var lastedMonth = Path.GetFileName(lastedMonthDirs);
             var lastedDayHtmlPath = Directory.GetFiles(lastedMonthDirs!, "*.html").OrderDescending(comparer).FirstOrDefault();
 
@@ -110,6 +123,8 @@ internal static class HtmlGenerator
                             <h2>最新のダイジェスト</h2>
                             <p><a href="./{lastedYear}/{lastedMonth}/{Path.GetFileName(lastedDayHtmlPath)}">{lastedYear}年{lastedMonth}月{Path.GetFileNameWithoutExtension(lastedDayHtmlPath)}日</a></p>
                             {statsHtml}
+                            <h2>ラベルから探す</h2>
+                            <p><a href="./labels/index.html">全ラベル一覧</a></p>
                             <h2>過去の月別ダイジェスト</h2>
                             """;
         }
@@ -331,6 +346,193 @@ internal static class HtmlGenerator
         builder.AppendLiteral(Environment.NewLine);
     }
 
+    public static string GenerateLabelIndexHtml(Dictionary<string, LabelPullRequestInfo> labels)
+    {
+        var builder = new DefaultInterpolatedStringHandler(0, 0);
+        builder.AppendLiteral("<p>各ラベルをクリックすると、そのラベルが付いた Pull Request の一覧を表示します。</p>");
+        builder.AppendLiteral(Environment.NewLine);
+
+        if (labels.Count == 0)
+        {
+            builder.AppendLiteral("<p>ラベル情報がありません。</p>");
+            return GenerateLabelPage("ラベル一覧", builder.ToStringAndClear());
+        }
+
+        builder.AppendLiteral("<table class=\"label-index-table\">");
+        builder.AppendLiteral(Environment.NewLine);
+        builder.AppendLiteral("  <thead><tr><th class=\"sortable\" data-sort-type=\"text\">ラベル</th><th class=\"sortable\" data-sort-type=\"number\">PR数</th></tr></thead>");
+        builder.AppendLiteral(Environment.NewLine);
+        builder.AppendLiteral("  <tbody>");
+        builder.AppendLiteral(Environment.NewLine);
+        foreach (var (key, value) in labels.OrderBy(kv => kv.Key))
+        {
+            var label = key;
+            var color = value.Color;
+            var count = value.Entries.Count;
+
+            var encodedLabel = HtmlEncoder.Default.Encode(label);
+            builder.AppendLiteral("    <tr><td data-sort=\"");
+            builder.AppendLiteral(encodedLabel);
+            builder.AppendLiteral("\"><a style=\"text-decoration:none;\" href=\"./");
+            builder.AppendLiteral(SanitizeLabelForPath(label));
+            builder.AppendLiteral("/index.html\"><span");
+            AppendIndexBadgeStyle(ref builder, color);
+            builder.AppendLiteral(">");
+            builder.AppendLiteral(encodedLabel);
+            builder.AppendLiteral("</span></a></td><td class=\"label-pr-count\" data-sort=\"");
+            builder.AppendFormatted(count);
+            builder.AppendLiteral("\">");
+            builder.AppendFormatted(count);
+            builder.AppendLiteral(" PRs</td></tr>");
+            builder.AppendLiteral(Environment.NewLine);
+        }
+        builder.AppendLiteral("  </tbody>");
+        builder.AppendLiteral(Environment.NewLine);
+        builder.AppendLiteral("</table>");
+        builder.AppendLiteral(Environment.NewLine);
+
+        return GenerateLabelPage("ラベル一覧", builder.ToStringAndClear(), GenerateLabelSortScript());
+    }
+
+    // Client-side column sorting for the labels/index.html table — no third-party library.
+    // Clicking a header reorders the <tbody> rows by that column's data-sort value (text via
+    // localeCompare, number via parseFloat) and toggles ascending/descending on repeat clicks.
+    private static string GenerateLabelSortScript()
+    {
+        return """
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+  var table = document.querySelector('table.label-index-table');
+  if (!table || !table.tBodies.length) return;
+  var tbody = table.tBodies[0];
+  var headers = Array.prototype.slice.call(table.querySelectorAll('thead th.sortable'));
+  var sortedIndex = 0;   // server pre-sorts by label name ascending
+  var ascending = true;
+
+  function cellValue(row, index) {
+    var cell = row.cells[index];
+    var v = cell.getAttribute('data-sort');
+    return v !== null ? v : cell.textContent;
+  }
+
+  function sortBy(index, type, asc) {
+    var rows = Array.prototype.slice.call(tbody.rows);
+    rows.sort(function(a, b) {
+      var av = cellValue(a, index), bv = cellValue(b, index);
+      var cmp = type === 'number'
+        ? (parseFloat(av) || 0) - (parseFloat(bv) || 0)
+        : av.localeCompare(bv);
+      return asc ? cmp : -cmp;
+    });
+    var frag = document.createDocumentFragment();
+    rows.forEach(function(row) { frag.appendChild(row); });
+    tbody.appendChild(frag);
+  }
+
+  function updateIndicators() {
+    headers.forEach(function(th, index) {
+      th.classList.remove('sort-asc', 'sort-desc');
+      if (index === sortedIndex) th.classList.add(ascending ? 'sort-asc' : 'sort-desc');
+    });
+  }
+
+  headers.forEach(function(th, index) {
+    th.addEventListener('click', function() {
+      var type = th.getAttribute('data-sort-type') || 'text';
+      if (sortedIndex === index) {
+        ascending = !ascending;
+      } else {
+        sortedIndex = index;
+        ascending = type !== 'number';   // text: ascending first, number: descending first
+      }
+      sortBy(index, type, ascending);
+      updateIndicators();
+    });
+  });
+
+  updateIndicators();   // reflect the initial (label name ascending) order
+});
+</script>
+""";
+    }
+
+    public static string GenerateLabelPageHtml(string label, LabelPullRequestInfo labelAggregate)
+    {
+        var ordered = labelAggregate.Entries
+            .OrderByDescending(static e => e.metadata.MergedAt)
+            .ThenByDescending(static e => int.TryParse(e.metadata.PullRequestNumber, out var n) ? n : 0)
+            .ToArray();
+
+        var builder = new DefaultInterpolatedStringHandler(0, 0);
+        builder.AppendLiteral("<p><a href=\"../index.html\">ラベル一覧へ戻る</a></p>");
+        builder.AppendLiteral(Environment.NewLine);
+
+        builder.AppendLiteral("<p>ラベル: ");
+        builder.AppendLiteral(HtmlEncoder.Default.Encode(label));
+        builder.AppendLiteral(" の Pull Request の一覧を表示します。上から新しい順に表示されています。</p>");
+        builder.AppendLiteral(Environment.NewLine);
+
+        builder.AppendLiteral("<ol class=\"label-pr-list\">");
+        builder.AppendLiteral(Environment.NewLine);
+        foreach (var (target, md) in ordered)
+        {
+            // Relative link from outputs/labels/{label}/ back to the daily page: ../../yyyy/MM/dd.html#PR番号
+            builder.AppendLiteral("  <li><a href=\"../../");
+            builder.AppendLiteral(target);
+            builder.AppendLiteral(".html#");
+            builder.AppendLiteral(md.PullRequestNumber);
+            builder.AppendLiteral("\">");
+            builder.AppendLiteral(HtmlEncoder.Default.Encode(md.TitleText));
+            builder.AppendLiteral("</a></li>");
+            builder.AppendLiteral(Environment.NewLine);
+        }
+        builder.AppendLiteral("</ol>");
+        builder.AppendLiteral(Environment.NewLine);
+
+        return GenerateLabelPage($"ラベル: {HtmlEncoder.Default.Encode(label)}", builder.ToStringAndClear(), GenerateScrollToTopHtml());
+    }
+
+    public static string SanitizeLabelForPath(string label)
+    {
+        // Replace every character outside [A-Za-z0-9._-] with '-' so the label is safe as both a
+        // directory name and a URL segment (e.g. "Priority:2" -> "Priority-2"). The same result is
+        // used for the on-disk folder and for the link to it, keeping path and href in sync.
+        if (label.AsSpan().IndexOfAnyExcept(AllowedLabelPathChars) < 0)
+            return label;
+
+        return string.Create(label.Length, label, static (span, state) =>
+        {
+            for (var i = 0; i < state.Length; i++)
+            {
+                var c = state[i];
+                span[i] = char.IsAsciiLetterOrDigit(c) || c is '.' or '_' or '-' ? c : '-';
+            }
+        });
+    }
+
+    private static void AppendIndexBadgeStyle(ref DefaultInterpolatedStringHandler builder, string? color)
+    {
+        if (string.IsNullOrEmpty(color))
+            return;
+
+        builder.AppendLiteral(" style=\"background-color: ");
+        builder.AppendLiteral(color);
+        builder.AppendLiteral("; color: ");
+        builder.AppendLiteral(GitHubLabalColor.GetFontColor(color));
+        builder.AppendLiteral("; display: inline-block; padding: 0 7px; font-size: 12px; font-weight: 500; line-height: 1.5; border-radius: 0.2em; border: 1px solid transparent;\"");
+    }
+
+    private static string GenerateLabelPage(string title, string content, string bodyEndHtml = "")
+    {
+        return GenerateTemplateHtml(
+            title: title,
+            subTitle: "dotnet/runtimeにマージされたPull RequestをAIで日本語要約",
+            content: content,
+            viewScript: bodyEndHtml,
+            floatingTocHtml: "",
+            floatingTocScript: "");
+    }
+
     private static string GenerateTemplateHtml(string title, string subTitle, string content, string viewScript, string floatingTocHtml, string floatingTocScript)
     {
         return $$"""
@@ -429,6 +631,9 @@ internal static class HtmlGenerator
     private static string GenerateViewScript()
     {
         return """
+<button id="scroll-to-top" class="scroll-to-top" type="button" aria-label="ページ上部へ戻る" title="ページ上部へ戻る">
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" aria-hidden="true"><path fill="currentColor" d="M13,20H11V8L5.5,13.5L4.08,12.08L12,4.16L19.92,12.08L18.5,13.5L13,8V20Z"/></svg>
+</button>
 <script>
 document.addEventListener('DOMContentLoaded', function() {
   var tabs = document.querySelectorAll('.view-tab');
@@ -441,6 +646,42 @@ document.addEventListener('DOMContentLoaded', function() {
       panels.forEach(function(p) { p.style.display = 'none'; });
       document.getElementById(view + '-view').style.display = '';
     });
+  });
+
+  var btn = document.getElementById('scroll-to-top');
+  if (!btn) return;
+  function toggle() {
+    if (window.scrollY > 300) { btn.classList.add('visible'); }
+    else { btn.classList.remove('visible'); }
+  }
+  toggle();
+  window.addEventListener('scroll', toggle, { passive: true });
+  btn.addEventListener('click', function() {
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  });
+});
+</script>
+""";
+    }
+
+    private static string GenerateScrollToTopHtml()
+    {
+        return """
+<button id="scroll-to-top" class="scroll-to-top" type="button" aria-label="ページ上部へ戻る" title="ページ上部へ戻る">
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" aria-hidden="true"><path fill="currentColor" d="M13,20H11V8L5.5,13.5L4.08,12.08L12,4.16L19.92,12.08L18.5,13.5L13,8V20Z"/></svg>
+</button>
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+  var btn = document.getElementById('scroll-to-top');
+  if (!btn) return;
+  function toggle() {
+    if (window.scrollY > 300) { btn.classList.add('visible'); }
+    else { btn.classList.remove('visible'); }
+  }
+  toggle();
+  window.addEventListener('scroll', toggle, { passive: true });
+  btn.addEventListener('click', function() {
+    window.scrollTo({ top: 0, behavior: 'smooth' });
   });
 });
 </script>
@@ -1269,6 +1510,74 @@ document.addEventListener('DOMContentLoaded', function() {
       .floating-toc-nav ol li a:hover { color: #60a5fa; }
       .floating-toc-nav ol li a.toc-active { color: #60a5fa; }
       .floating-toc-nav ol li:has(a.toc-active) { border-left-color: #60a5fa; }
+    }
+
+    .scroll-to-top {
+      position: fixed;
+      bottom: 24px;
+      right: 24px;
+      width: 44px;
+      height: 44px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0;
+      border: none;
+      border-radius: 50%;
+      background: #2563eb;
+      color: #ffffff;
+      cursor: pointer;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+      opacity: 0;
+      visibility: hidden;
+      transition: opacity 0.2s ease, visibility 0.2s ease;
+      z-index: 300;
+    }
+
+    .scroll-to-top.visible {
+      opacity: 1;
+      visibility: visible;
+    }
+
+    .scroll-to-top:hover {
+      background: #1d4ed8;
+    }
+
+    /* 画面幅が広いときは .content（最大1140px・中央寄せ）の右下に寄せる。本文右端からの余白は通常時と同じ24px */
+    @media (min-width: 1200px) {
+      .scroll-to-top {
+        right: calc((100vw - 1140px) / 2 + 24px);
+      }
+    }
+
+    @media (max-width: 768px) {
+      .scroll-to-top {
+        bottom: 16px;
+        right: 16px;
+      }
+    }
+
+    .label-index-table th.sortable {
+      cursor: pointer;
+      user-select: none;
+      white-space: nowrap;
+    }
+
+    .label-index-table th.sortable::after {
+      content: "\2195";
+      margin-left: 6px;
+      font-size: 12px;
+      opacity: 0.4;
+    }
+
+    .label-index-table th.sort-asc::after {
+      content: "\2191";
+      opacity: 1;
+    }
+
+    .label-index-table th.sort-desc::after {
+      content: "\2193";
+      opacity: 1;
     }
 """;
     }

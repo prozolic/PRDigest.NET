@@ -1,9 +1,9 @@
 ﻿using Anthropic;
 using Anthropic.Exceptions;
 using Anthropic.Models.Messages;
+using Markdig;
 using Octokit;
 using PRDigest.NET;
-using System.Globalization;
 using System.Runtime.InteropServices;
 using System.Text;
 
@@ -24,6 +24,9 @@ await CreateHtml(archivesDir, outputsDir);
 
 // (Re)create RSS feed from archived markdown files
 await CreateRss(archivesDir, outputsDir);
+
+// (Re)create the label index page and per-label PR list pages
+await CreateLabelPageHtml(archivesDir, outputsDir);
 
 // end
 var endTime = TimeProvider.System.GetTimestamp();
@@ -261,7 +264,7 @@ async ValueTask<string> SummarizePullRequestAsync(PullRequestInfo[] pullRequestI
 async ValueTask CreateRss(string archivesDir, string outputsDir)
 {
     const int MaxDays = 3;
-    var comparer = StringComparer.Create(CultureInfo.InvariantCulture, CompareOptions.NumericOrdering);
+    var comparer = StringComparerOptions.DefaultComparer;
 
     var items = new List<(string target, string markdownContent)>(MaxDays);
     foreach (var yearDir in Directory.EnumerateDirectories(archivesDir).OrderDescending(comparer))
@@ -335,6 +338,74 @@ async ValueTask CreateHtml(string archivesDir, string outputsDir)
     await File.WriteAllTextAsync(Path.Combine(outputsDir, "index.html"), HtmlGenerator.GenerateIndex(archivesDir, outputsDir));
 }
 
+async ValueTask CreateLabelPageHtml(string archivesDir, string outputsDir)
+{
+    // Collect, across ALL archived markdown files, every PR grouped by label.
+    // Each entry remembers the archive's date path ("yyyy/MM/dd") so a per-label page
+    // can link to the PR's anchor on the corresponding daily HTML page.
+    var comparer = StringComparerOptions.DefaultComparer;
+    var labelTable = new Dictionary<string, LabelPullRequestInfo>(256);
+
+    foreach (var yearDir in Directory.EnumerateDirectories(archivesDir).OrderDescending(comparer))
+    {
+        var year = Path.GetFileName(yearDir);
+        foreach (var monthDir in Directory.EnumerateDirectories(yearDir).OrderDescending(comparer))
+        {
+            var month = Path.GetFileName(monthDir);
+            foreach (var mdFilePath in Directory.EnumerateFiles(monthDir, "*.md").OrderDescending(comparer))
+            {
+                var day = Path.GetFileNameWithoutExtension(mdFilePath);
+                var target = $"{year}/{month}/{day}";
+
+                var markdown = await File.ReadAllTextAsync(mdFilePath);
+                var document = Markdown.Parse(markdown, MarkdownOptions.Pipeline);
+                var analyzerResult = PullRequestAnalyzer.Analyze(document);
+
+                foreach (var (label, metadata) in analyzerResult.LabelMap)
+                {
+                    ref var aggregate = ref CollectionsMarshal.GetValueRefOrAddDefault(labelTable, label, out var exists);
+                    if (!exists)
+                    {
+                        aggregate = new LabelPullRequestInfo();
+                    }
+
+                    // Adopt the first color we encounter for the label (colors are stable per label).
+                    if (string.IsNullOrEmpty(aggregate!.Color) && analyzerResult.LabelColorGroups.TryGetValue(label, out var color))
+                    {
+                        aggregate.Color = color;
+                    }
+
+                    foreach (var m in metadata)
+                    {
+                        aggregate.Entries.Add((target, m));
+                    }
+                }
+            }
+        }
+    }
+
+    // set up labels directory: outputs/labels
+    var labelsDir = Path.Combine(outputsDir, "labels");
+    if (!Directory.Exists(labelsDir))
+    {
+        Directory.CreateDirectory(labelsDir);
+    }
+
+    // outputs/labels/index.html : every label as a badge (with PR count) linking to its page
+    await File.WriteAllTextAsync(Path.Combine(labelsDir, "index.html"), HtmlGenerator.GenerateLabelIndexHtml(labelTable));
+
+    // outputs/labels/{sanitized}/index.html
+    foreach (var (label, info) in labelTable)
+    {
+        var labelDir = Path.Combine(labelsDir, HtmlGenerator.SanitizeLabelForPath(label));
+        if (!Directory.Exists(labelDir))
+        {
+            Directory.CreateDirectory(labelDir);
+        }
+        await File.WriteAllTextAsync(Path.Combine(labelDir, "index.html"), HtmlGenerator.GenerateLabelPageHtml(label, info));
+    }
+}
+
 internal sealed class PullRequestInfo
 {
     public required Issue Issue { get; init; }
@@ -346,5 +417,12 @@ internal sealed class PullRequestInfo
     public required IReadOnlyList<IssueComment> IssueComments { get; init; }
 
     public required IReadOnlyList<PullRequestReview> Reviews { get; init; }
+}
+
+internal sealed class LabelPullRequestInfo
+{
+    public string? Color { get; set; }
+
+    public List<(string target, PullRequestAnalyzer.Metadata metadata)> Entries { get; } = [];
 }
 
