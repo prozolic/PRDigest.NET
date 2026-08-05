@@ -8,6 +8,14 @@ namespace PRDigest.NET;
 
 internal static class HtmlGenerator
 {
+    private enum HtmlPageKind
+    {
+        Index, // outputs/index.html
+        Daily, // outputs/yyyy/MM/dd.html
+        LabelIndex, // outputs/labels/index.html
+        LabelPage, //outputs/labels/{label}/index.html
+    }
+
     private static readonly SearchValues<char> AllowedLabelPathChars =
         SearchValues.Create("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-");
 
@@ -130,9 +138,10 @@ internal static class HtmlGenerator
         }
 
         return GenerateTemplateHtml(
-            title: $"PR Digest.NET", 
-            subTitle: "dotnet/runtimeにマージされたPull RequestをAIで日本語要約", 
-            content: latestPullRequestInfo + detailsBuilder.ToStringAndClear(), 
+            pageKind: HtmlPageKind.Index,
+            title: $"PR Digest.NET",
+            subTitle: "dotnet/runtimeにマージされたPull RequestをAIで日本語要約",
+            content: latestPullRequestInfo + detailsBuilder.ToStringAndClear(),
             viewScript: GenerateViewScript(),
             floatingTocHtml: "",
             floatingTocScript: "");
@@ -213,7 +222,8 @@ internal static class HtmlGenerator
 """;
 
         return GenerateTemplateHtml(
-            title: $"Pull Request on {startTargetDate}", 
+            pageKind: HtmlPageKind.Daily,
+            title: $"Pull Request on {startTargetDate}",
             subTitle: "dotnet/runtimeにマージされたPull RequestをAIで日本語要約", 
             content: content,
             viewScript: GenerateViewScript(), 
@@ -355,7 +365,7 @@ internal static class HtmlGenerator
         if (labels.Count == 0)
         {
             builder.AppendLiteral("<p>ラベル情報がありません。</p>");
-            return GenerateLabelPage("ラベル一覧", builder.ToStringAndClear());
+            return GenerateLabelPage(HtmlPageKind.LabelIndex, "ラベル一覧", builder.ToStringAndClear());
         }
 
         builder.AppendLiteral("<table class=\"label-index-table\">");
@@ -391,7 +401,7 @@ internal static class HtmlGenerator
         builder.AppendLiteral("</table>");
         builder.AppendLiteral(Environment.NewLine);
 
-        return GenerateLabelPage("ラベル一覧", builder.ToStringAndClear(), GenerateLabelSortScript());
+        return GenerateLabelPage(HtmlPageKind.LabelIndex, "ラベル一覧", builder.ToStringAndClear(), GenerateLabelSortScript());
     }
 
     // Client-side column sorting for the labels/index.html table — no third-party library.
@@ -489,7 +499,7 @@ document.addEventListener('DOMContentLoaded', function() {
         builder.AppendLiteral("</ol>");
         builder.AppendLiteral(Environment.NewLine);
 
-        return GenerateLabelPage($"ラベル: {HtmlEncoder.Default.Encode(label)}", builder.ToStringAndClear(), GenerateScrollToTopHtml());
+        return GenerateLabelPage(HtmlPageKind.LabelPage, $"ラベル: {HtmlEncoder.Default.Encode(label)}", builder.ToStringAndClear(), GenerateScrollToTopHtml());
     }
 
     public static string SanitizeLabelForPath(string label)
@@ -522,9 +532,10 @@ document.addEventListener('DOMContentLoaded', function() {
         builder.AppendLiteral("; display: inline-block; padding: 0 7px; font-size: 12px; font-weight: 500; line-height: 1.5; border-radius: 0.2em; border: 1px solid transparent;\"");
     }
 
-    private static string GenerateLabelPage(string title, string content, string bodyEndHtml = "")
+    private static string GenerateLabelPage(HtmlPageKind pageKind, string title, string content, string bodyEndHtml = "")
     {
         return GenerateTemplateHtml(
+            pageKind: pageKind,
             title: title,
             subTitle: "dotnet/runtimeにマージされたPull RequestをAIで日本語要約",
             content: content,
@@ -533,7 +544,7 @@ document.addEventListener('DOMContentLoaded', function() {
             floatingTocScript: "");
     }
 
-    private static string GenerateTemplateHtml(string title, string subTitle, string content, string viewScript, string floatingTocHtml, string floatingTocScript)
+    private static string GenerateTemplateHtml(HtmlPageKind pageKind, string title, string subTitle, string content, string viewScript, string floatingTocHtml, string floatingTocScript)
     {
         return $$"""
 <!DOCTYPE html>
@@ -578,7 +589,7 @@ document.addEventListener('DOMContentLoaded', function() {
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
   <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism.min.css" rel="stylesheet">
   <style>
-{{GenerateCssStyle()}}
+{{GetCssStyle(pageKind)}}
   </style>
 </head>
 <body>
@@ -796,9 +807,34 @@ document.addEventListener('DOMContentLoaded', function() {
 """;
     }
 
-    private static string GenerateCssStyle()
+    private static string GetCssStyle(HtmlPageKind pageKind) => pageKind switch
     {
-        return $$"""
+        HtmlPageKind.Index => IndexCss,
+        HtmlPageKind.Daily => DailyCss,
+        HtmlPageKind.LabelIndex => LabelIndexCss,
+        HtmlPageKind.LabelPage => LabelPageCss,
+        _ => BaseCss,
+    };
+
+    // outputs/index.html: month <details> list, latest digest stats, scroll-to-top button.
+    private const string IndexCss =
+        BaseCss + DetailsCss + DayListCss + StatsCss + ScrollToTopCss;
+
+    // outputs/yyyy/MM/dd.html: markdown body (code/table/strong), view tabs, label groups, floating TOC.
+    private const string DailyCss =
+        BaseCss + DetailsCss + MarkdownContentCss + TableCss + TableOfContentsCss +
+        ViewTabsCss + LabelGroupCss + LabelPrCountCss + LabelPrListCss + FloatingTocCss + ScrollToTopCss;
+
+    // outputs/labels/index.html: sortable label table only (no <details>, no scroll-to-top button).
+    private const string LabelIndexCss =
+        BaseCss + TableCss + LabelPrCountCss + LabelIndexTableCss;
+
+    // outputs/labels/{label}/index.html: a single PR list plus the scroll-to-top button.
+    private const string LabelPageCss =
+        BaseCss + LabelPrListCss + ScrollToTopCss;
+
+    // Layout shared by every page: navbar, header, content card, base typography and footer.
+    private const string BaseCss = """
     * {
       box-sizing: border-box;
     }
@@ -806,7 +842,7 @@ document.addEventListener('DOMContentLoaded', function() {
     :root {
       interpolate-size: allow-keywords;
     }
-    
+
     body {
       margin: 0;
       padding: 0;
@@ -844,7 +880,7 @@ document.addEventListener('DOMContentLoaded', function() {
       padding-bottom: 40px;
       margin-bottom: 0;
     }
-    
+
     .container {
       display: flex;
       justify-content: space-between;
@@ -853,16 +889,16 @@ document.addEventListener('DOMContentLoaded', function() {
       margin: 0 auto;
       padding: 0 24px;
     }
-    
+
     .page {
       min-height: 100vh;
       padding: 24px 16px;
     }
-    
+
     .main {
       margin: 0 auto;
     }
-    
+
     .content {
       background: #ffffff;
       width: 100%;
@@ -879,7 +915,7 @@ document.addEventListener('DOMContentLoaded', function() {
       padding-bottom: 16px;
       color: #1a1a1a;
     }
-    
+
     h2 {
       font-size: 24px;
       font-weight: 700;
@@ -889,13 +925,13 @@ document.addEventListener('DOMContentLoaded', function() {
       padding-top: 16px;
       border-top: 1px solid #e5e7eb;
     }
-    
+
     h2:first-of-type {
       margin-top: 0;
       padding-top: 0;
       border-top: none;
     }
-    
+
     h3 {
       font-size: 20px;
       font-weight: 600;
@@ -911,14 +947,14 @@ document.addEventListener('DOMContentLoaded', function() {
       overflow-wrap: break-word;
       color: #374151;
     }
-    
+
     a {
       color: #2563eb;
       border-radius: 24px;
       line-height: 24px;
       text-decoration: none;
     }
-    
+
     a:hover {
       color: #2563eb;
       text-decoration: underline;
@@ -936,7 +972,7 @@ document.addEventListener('DOMContentLoaded', function() {
       color: #9ca3af;
       text-decoration: none;
     }
-    
+
     ul {
       margin: 0;
       padding: 2px 2px;
@@ -948,124 +984,10 @@ document.addEventListener('DOMContentLoaded', function() {
       padding: 0;
     }
 
-    .daylist {
-      list-style-type: none;
-      display: grid;
-      grid-auto-flow: column;
-      grid-template-rows: repeat(12, auto);
-    }
-
-    .dayitem {
-      list-style: none;
-      display: flex;
-      align-items: center;
-    }
-    
     li {
       margin: 0;
       padding: 2px 2px;
       color: #374151;
-    }
-
-    code {
-      font-family: 'JetBrains Mono', 'Consolas', 'Monaco', 'Courier New', monospace;
-      font-size: 14px;
-      background: #f3f4f6;
-      padding: 2px 6px;
-      border-radius: 4px;
-      color: #e11d48;
-    }
-    
-    pre {
-      margin: 24px 0;
-      padding: 0;
-      border-radius: 8px;
-      overflow: hidden;
-      background: #f9fafb;
-      border: 1px solid #e5e7eb;
-    }
-    
-    pre code {
-      display: block;
-      padding: 16px 20px;
-      overflow-x: auto;
-      background: transparent;
-      color: inherit;
-      border-radius: 0;
-    }
-
-    table {
-      width: 100%;
-      border-collapse: collapse;
-      margin: 16px 0;
-      font-size: 14px;
-      color: #374151;
-    }
-
-    th {
-      background: #f3f4f6;
-      color: #1a1a1a;
-      font-weight: 600;
-      text-align: left;
-      padding: 10px 14px;
-      border: 1px solid #e5e7eb;
-      overflow-wrap: break-word;
-    }
-
-    td {
-      padding: 8px 14px;
-      border: 1px solid #e5e7eb;
-      overflow-wrap: anywhere;
-      word-break: break-word;
-    }
-
-    details {
-      margin: 0px 0px 8px 0px;
-      background-color: #f5f5f5;
-    }
-
-    details::details-content {
-      height: 0;
-      overflow: clip;
-      opacity: 0;
-      transition: height 0.1s ease, opacity 0.1s ease,
-        content-visibility 0.1s ease allow-discrete;
-    }
-    
-    details[open]::details-content {
-      height: auto; /* for unsupported browser */
-      height: calc-size(auto, size);
-      opacity: 1;
-    }
-
-    summary {
-      background-color: #ddd;
-      padding: 1em 1em;
-      border-radius: 4px;
-      font-weight: bold;
-      cursor: pointer;
-    }
-    
-    strong {
-      font-weight: 600;
-      color: #1a1a1a;
-    }
-
-    #table-of-contents + ol li {
-      padding: 0;
-      margin: 0;
-      font-weight: bold;
-    }
-
-    #table-of-contents + ol li a {
-      color: #2563eb;
-      font-weight: bold;
-      text-decoration: underline;
-    }
-
-    #table-of-contents + ol li a:hover {
-      color: #1d4ed8;
-      text-decoration: underline;
     }
 
     footer {
@@ -1082,6 +1004,180 @@ document.addEventListener('DOMContentLoaded', function() {
       color: #9ca3af;
     }
 
+    @media (min-width: 1200px) {
+      .container {
+        max-width: 1140px;
+      }
+
+      .content {
+        max-width: 1140px;
+      }
+
+      .main {
+        max-width: 1140px;
+      }
+
+    }
+
+    @media (max-width: 768px) {
+      .page {
+        padding: 16px 8px;
+      }
+
+      .container {
+        max-width: 720px;
+      }
+
+
+      .main {
+        max-width: 720px;
+      }
+
+      .content {
+        max-width: 720px;
+        padding: 32px 24px;
+      }
+
+      h1 {
+        font-size: 28px;
+      }
+
+      h2 {
+        font-size: 22px;
+      }
+
+      h3 {
+        font-size: 18px;
+      }
+
+      body {
+        font-size: 15px;
+      }
+
+      li {
+        word-break: break-word;
+        overflow-wrap: anywhere;
+      }
+
+    }
+
+    @media (prefers-color-scheme: dark) {
+      body {
+        background-color: #111827;
+        color: #e5e7eb;
+      }
+
+      .content {
+        background: #1f2937;
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+      }
+
+      h1, h2, h3 {
+        color: #f9fafb;
+      }
+
+      h1 {
+        border-bottom-color: #374151;
+      }
+
+      h2 {
+        border-top-color: #374151;
+      }
+
+      p, li {
+        color: #d1d5db;
+      }
+
+      a {
+        color: #60a5fa;
+      }
+
+      a:hover {
+        color: #93c5fd;
+      }
+    }
+
+
+""";
+
+    // <details>/<summary> blocks: the month list on index.html and the label groups on daily pages.
+    private const string DetailsCss = """
+    details {
+      margin: 0px 0px 8px 0px;
+      background-color: #f5f5f5;
+    }
+
+    details::details-content {
+      height: 0;
+      overflow: clip;
+      opacity: 0;
+      transition: height 0.1s ease, opacity 0.1s ease,
+        content-visibility 0.1s ease allow-discrete;
+    }
+
+    details[open]::details-content {
+      height: auto; /* for unsupported browser */
+      height: calc-size(auto, size);
+      opacity: 1;
+    }
+
+    summary {
+      background-color: #ddd;
+      padding: 1em 1em;
+      border-radius: 4px;
+      font-weight: bold;
+      cursor: pointer;
+    }
+
+    @media (max-width: 768px) {
+      summary {
+        padding: 1.2em 1em;
+        font-size: 16px;
+      }
+    }
+
+    @media (prefers-color-scheme: dark) {
+      details {
+        background-color: #1f2937;
+      }
+
+      summary {
+        background-color: #374151;
+      }
+    }
+
+
+""";
+
+    // Day links on index.html, laid out as a multi-column grid.
+    private const string DayListCss = """
+    .daylist {
+      list-style-type: none;
+      display: grid;
+      grid-auto-flow: column;
+      grid-template-rows: repeat(12, auto);
+    }
+
+    .dayitem {
+      list-style: none;
+      display: flex;
+      align-items: center;
+    }
+
+    @media (max-width: 768px) {
+      .daylist {
+        list-style-type: none;
+        display: grid;
+        grid-auto-flow: column;
+        grid-template-rows: repeat(16, auto);
+      }
+    }
+
+
+""";
+
+    // PR count cards for the latest digest on index.html.
+    private const string StatsCss = """
     .stats-grid {
       display: grid;
       grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -1120,6 +1216,179 @@ document.addEventListener('DOMContentLoaded', function() {
       overflow-wrap: break-word;
     }
 
+    @media (max-width: 768px) {
+      .stats-grid,
+      .stats-label-row {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .stat-value {
+        font-size: 28px;
+      }
+    }
+
+    @media (prefers-color-scheme: dark) {
+      .stat-card {
+        background: #374151;
+        border-color: #4b5563;
+      }
+
+      .stat-value {
+        color: #f9fafb;
+      }
+
+      .stat-label {
+        color: #9ca3af;
+      }
+    }
+
+
+""";
+
+    // Inline code, code blocks, emphasis and label badges rendered from the summarized markdown.
+    private const string MarkdownContentCss = """
+    code {
+      font-family: 'JetBrains Mono', 'Consolas', 'Monaco', 'Courier New', monospace;
+      font-size: 14px;
+      background: #f3f4f6;
+      padding: 2px 6px;
+      border-radius: 4px;
+      color: #e11d48;
+    }
+
+    pre {
+      margin: 24px 0;
+      padding: 0;
+      border-radius: 8px;
+      overflow: hidden;
+      background: #f9fafb;
+      border: 1px solid #e5e7eb;
+    }
+
+    pre code {
+      display: block;
+      padding: 16px 20px;
+      overflow-x: auto;
+      background: transparent;
+      color: inherit;
+      border-radius: 0;
+    }
+
+    strong {
+      font-weight: 600;
+      color: #1a1a1a;
+    }
+
+    @media (max-width: 768px) {
+      code {
+        word-break: break-all;
+        overflow-wrap: anywhere;
+      }
+
+      pre code {
+        word-break: break-all;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+      }
+
+      li > span[style*="border-radius:2em"] {
+        white-space: normal !important;
+        overflow-wrap: anywhere;
+      }
+    }
+
+    @media (prefers-color-scheme: dark) {
+      strong {
+        color: #f9fafb;
+      }
+
+      code {
+        background: #374151;
+        color: #fca5a5;
+      }
+
+      pre {
+        background: #111827;
+        border-color: #374151;
+      }
+    }
+
+
+""";
+
+    // Tables: markdown tables on daily pages and the label table on labels/index.html.
+    private const string TableCss = """
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 16px 0;
+      font-size: 14px;
+      color: #374151;
+    }
+
+    th {
+      background: #f3f4f6;
+      color: #1a1a1a;
+      font-weight: 600;
+      text-align: left;
+      padding: 10px 14px;
+      border: 1px solid #e5e7eb;
+      overflow-wrap: break-word;
+    }
+
+    td {
+      padding: 8px 14px;
+      border: 1px solid #e5e7eb;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      th {
+        background: #374151;
+        color: #f9fafb;
+        border-color: #4b5563;
+      }
+
+      td {
+        border-color: #4b5563;
+        color: #d1d5db;
+      }
+    }
+
+
+""";
+
+    // The markdown-generated table of contents on daily pages.
+    private const string TableOfContentsCss = """
+    #table-of-contents + ol li {
+      padding: 0;
+      margin: 0;
+      font-weight: bold;
+    }
+
+    #table-of-contents + ol li a {
+      color: #2563eb;
+      font-weight: bold;
+      text-decoration: underline;
+    }
+
+    #table-of-contents + ol li a:hover {
+      color: #1d4ed8;
+      text-decoration: underline;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      #table-of-contents + ol li a {
+        color: #60a5fa;
+      }
+    }
+
+
+""";
+
+    // List / category / label view switcher on daily pages.
+    private const string ViewTabsCss = """
     .view-tabs {
       display: flex;
       border-bottom: 2px solid #e5e7eb;
@@ -1148,6 +1417,34 @@ document.addEventListener('DOMContentLoaded', function() {
       border-bottom-color: #2563eb;
     }
 
+    @media (max-width: 768px) {
+      .view-tab {
+        padding: 8px 16px;
+        font-size: 14px;
+      }
+    }
+
+    @media (prefers-color-scheme: dark) {
+      .view-tabs {
+        border-bottom-color: #374151;
+      }
+
+      .view-tab {
+        color: #9ca3af;
+      }
+
+      .view-tab:hover,
+      .view-tab.active {
+        color: #60a5fa;
+        border-bottom-color: #60a5fa;
+      }
+    }
+
+
+""";
+
+    // Collapsible category / label groups on daily pages.
+    private const string LabelGroupCss = """
     .label-group {
       margin: 0 0 8px 0;
     }
@@ -1159,12 +1456,38 @@ document.addEventListener('DOMContentLoaded', function() {
       gap: 8px;
     }
 
+    @media (prefers-color-scheme: dark) {
+      .label-group {
+        background-color: #1f2937;
+      }
+
+      .label-group-summary {
+        background-color: #374151;
+      }
+    }
+
+
+""";
+
+    // "(N PRs)" annotation used by daily pages and the label table.
+    private const string LabelPrCountCss = """
     .label-pr-count {
       font-size: 13px;
       color: #6b7280;
       font-weight: normal;
     }
 
+    @media (prefers-color-scheme: dark) {
+      .label-pr-count {
+        color: #9ca3af;
+      }
+    }
+
+
+""";
+
+    // PR link lists inside label groups and on label pages.
+    private const string LabelPrListCss = """
     .label-pr-list {
       padding: 8px 16px 8px 32px;
     }
@@ -1182,216 +1505,13 @@ document.addEventListener('DOMContentLoaded', function() {
       color: #1d4ed8;
     }
 
-    @media (min-width: 1200px) {
-      .container {
-        max-width: 1140px;
-      }
-
-      .content {
-        max-width: 1140px;
-      }
-
-      .main {
-        max-width: 1140px;
-      }
-
-    }
-
     @media (max-width: 768px) {
-      .page {
-        padding: 16px 8px;
-      }
-
-      .container {
-        max-width: 720px;
-      }
-
-
-      .main {
-        max-width: 720px;
-      }
-    
-      .content {
-        max-width: 720px;
-        padding: 32px 24px;
-      }
-    
-      h1 {
-        font-size: 28px;
-      }
-    
-      h2 {
-        font-size: 22px;
-      }
-    
-      h3 {
-        font-size: 18px;
-      }
-    
-      body {
-        font-size: 15px;
-      }
-
-      code {
-        word-break: break-all;
-        overflow-wrap: anywhere;
-      }
-
-      pre code {
-        word-break: break-all;
-        white-space: pre-wrap;
-        overflow-wrap: anywhere;
-      }
-
-      li {
-        word-break: break-word;
-        overflow-wrap: anywhere;
-      }
-
-      li > span[style*="border-radius:2em"] {
-        white-space: normal !important;
-        overflow-wrap: anywhere;
-      }
-
-      .daylist {
-        list-style-type: none;
-        display: grid;
-        grid-auto-flow: column;
-        grid-template-rows: repeat(16, auto);
-      }
-
-      summary {
-        padding: 1.2em 1em;
-        font-size: 16px;
-      }
-
-      .stats-grid,
-      .stats-label-row {
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-      }
-
-      .stat-value {
-        font-size: 28px;
-      }
-
-      .view-tab {
-        padding: 8px 16px;
-        font-size: 14px;
-      }
-
       .label-pr-list {
         padding: 8px 8px 8px 24px;
       }
-
     }
 
     @media (prefers-color-scheme: dark) {
-      body {
-        background-color: #111827;
-        color: #e5e7eb;
-      }
-
-      details { 
-        background-color: #1f2937; 
-      }
-
-      summary { 
-        background-color: #374151; 
-      }
-    
-      .content {
-        background: #1f2937;
-        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
-      }
-    
-      h1, h2, h3, strong {
-        color: #f9fafb;
-      }
-    
-      h1 {
-        border-bottom-color: #374151;
-      }
-    
-      h2 {
-        border-top-color: #374151;
-      }
-    
-      p, li {
-        color: #d1d5db;
-      }
-    
-      a {
-        color: #60a5fa;
-      }
-    
-      a:hover {
-        color: #93c5fd;
-      }
-
-      #table-of-contents + ol li a {
-        color: #60a5fa;
-      }
-    
-      code {
-        background: #374151;
-        color: #fca5a5;
-      }
-    
-      pre {
-        background: #111827;
-        border-color: #374151;
-      }
-
-      th {
-        background: #374151;
-        color: #f9fafb;
-        border-color: #4b5563;
-      }
-
-      td {
-        border-color: #4b5563;
-        color: #d1d5db;
-      }
-
-      .stat-card {
-        background: #374151;
-        border-color: #4b5563;
-      }
-
-      .stat-value {
-        color: #f9fafb;
-      }
-
-      .stat-label {
-        color: #9ca3af;
-      }
-
-      .view-tabs {
-        border-bottom-color: #374151;
-      }
-
-      .view-tab {
-        color: #9ca3af;
-      }
-
-      .view-tab:hover,
-      .view-tab.active {
-        color: #60a5fa;
-        border-bottom-color: #60a5fa;
-      }
-
-      .label-group {
-        background-color: #1f2937;
-      }
-
-      .label-group-summary {
-        background-color: #374151;
-      }
-
-      .label-pr-count {
-        color: #9ca3af;
-      }
-
       .label-pr-list li a {
         color: #60a5fa;
       }
@@ -1401,6 +1521,11 @@ document.addEventListener('DOMContentLoaded', function() {
       }
     }
 
+
+""";
+
+    // Sidebar table of contents shown on daily pages.
+    private const string FloatingTocCss = """
     .floating-toc {
       position: fixed;
       top: 220px;
@@ -1512,6 +1637,11 @@ document.addEventListener('DOMContentLoaded', function() {
       .floating-toc-nav ol li:has(a.toc-active) { border-left-color: #60a5fa; }
     }
 
+
+""";
+
+    // Floating "back to top" button.
+    private const string ScrollToTopCss = """
     .scroll-to-top {
       position: fixed;
       bottom: 24px;
@@ -1557,6 +1687,11 @@ document.addEventListener('DOMContentLoaded', function() {
       }
     }
 
+
+""";
+
+    // Sort indicators for the label table on labels/index.html.
+    private const string LabelIndexTableCss = """
     .label-index-table th.sortable {
       cursor: pointer;
       user-select: none;
@@ -1580,5 +1715,4 @@ document.addEventListener('DOMContentLoaded', function() {
       opacity: 1;
     }
 """;
-    }
 }
