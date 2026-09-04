@@ -16,7 +16,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-    timeout-minutes: 10
+    timeout-minutes: 20
     outputs:
       has_changes: ${{ steps.commit.outputs.has_changes }}
     steps:
