@@ -1,6 +1,8 @@
 ﻿using Markdig;
 using Markdig.Helpers;
 using System.Buffers;
+using System.Collections.Immutable;
+using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Text.Encodings.Web;
 
@@ -18,6 +20,16 @@ internal static class HtmlGenerator
 
     private static readonly SearchValues<char> AllowedLabelPathChars =
         SearchValues.Create("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-");
+
+    private static readonly string[] PieSliceColors =
+    [
+        "#3066a5", "#d9ad86", "#21734a", "#d6a3e2", "#736521",
+        "#e2a3c2", "#21706d", "#7fc74f", "#7848ca", "#e0a79e",
+    ];
+
+    private const int MaxPieSliceCount = 10;
+
+    private const int MinPieSliceCount = 3;
 
     private static bool IsYearDirectoryName(string path)
     {
@@ -237,10 +249,19 @@ internal static class HtmlGenerator
             return "<p>ラベル情報がありません。</p>";
 
         var builder = new DefaultInterpolatedStringHandler(0, 0);
+
+        // Ordered by PR count, then by name so a tie never reorders the groups between builds.
+        var ranked = analyzerResult.LabelMap
+            .OrderByDescending(kv => kv.Value.Length)
+            .ThenBy(kv => kv.Key, StringComparer.Ordinal)
+            .ToArray();
+
+        AppendDailyLabelPieFigure(ref builder, analyzerResult, ranked);
+
         builder.AppendLiteral("<h3>ラベル別PR一覧</h3>");
         builder.AppendLiteral(Environment.NewLine);
 
-        foreach (var (labelName, metadataList) in analyzerResult.LabelMap.OrderByDescending(kv => kv.Value.Length))
+        foreach (var (labelName, metadataList) in ranked)
         {
             builder.AppendLiteral("<details class=\"label-group\">");
             builder.AppendLiteral(Environment.NewLine);
@@ -275,6 +296,55 @@ internal static class HtmlGenerator
         }
 
         return builder.ToStringAndClear();
+    }
+
+    private static void AppendDailyLabelPieFigure(
+        ref DefaultInterpolatedStringHandler builder,
+        PullRequestAnalyzer.AnalysisResults analyzerResult,
+        KeyValuePair<string, ImmutableArray<PullRequestAnalyzer.Metadata>>[] ranked)
+    {
+        var sliceCount = Math.Min(MaxPieSliceCount, ranked.Length);
+        if (ranked.Length > MaxPieSliceCount)
+        {
+            var tiedCount = ranked[MaxPieSliceCount - 1].Value.Length;
+            if (ranked[MaxPieSliceCount].Value.Length == tiedCount)
+            {
+                sliceCount = 0;
+                while (sliceCount < ranked.Length && ranked[sliceCount].Value.Length > tiedCount)
+                {
+                    sliceCount++;
+                }
+            }
+        }
+
+        if (sliceCount < MinPieSliceCount)
+            return;
+
+        var grandTotal = 0;
+        foreach (var (_, metadataList) in ranked)
+        {
+            grandTotal += metadataList.Length;
+        }
+
+        var slices = new (string Label, string? Color, int Count)[sliceCount];
+        var shownTotal = 0;
+        for (var i = 0; i < sliceCount; i++)
+        {
+            var (label, metadataList) = ranked[i];
+            slices[i] = (label, analyzerResult.LabelColorGroups.GetValueOrDefault(label), metadataList.Length);
+            shownTotal += metadataList.Length;
+        }
+
+        // Daily pages sit at outputs/yyyy/MM/dd.html, the same depth the markdown's label links use.
+        var pieHtml = GenerateLabelPieFigure(slices, grandTotal, shownTotal,"../../labels/");
+        if (pieHtml.Length == 0)
+            return;
+
+        builder.AppendLiteral("<h3>ラベル別 Pull Request 数（上位");
+        builder.AppendFormatted(sliceCount);
+        builder.AppendLiteral("）</h3>");
+        builder.AppendLiteral(Environment.NewLine);
+        builder.AppendLiteral(pieHtml);
     }
 
     private static string GenerateCategorizedTocHtml(PullRequestAnalyzer.AnalysisResults analyzerResult)
@@ -368,6 +438,36 @@ internal static class HtmlGenerator
             return GenerateLabelPage(HtmlPageKind.LabelIndex, "ラベル一覧", builder.ToStringAndClear());
         }
 
+        var grandTotal = 0;
+        foreach (var (_, info) in labels)
+        {
+            grandTotal += info.Entries.Count;
+        }
+
+        // Ordered by PR count, then by name so a tie never reorders the chart between builds.
+        var ranked = labels
+            .OrderByDescending(kv => kv.Value.Entries.Count)
+            .ThenBy(kv => kv.Key, StringComparer.Ordinal)
+            .Take(MaxPieSliceCount)
+            .Select(kv => (kv.Key, kv.Value.Color, kv.Value.Entries.Count))
+            .ToArray();
+
+        var shownTotal = 0;
+        foreach (var slice in ranked)
+        {
+            shownTotal += slice.Count;
+        }
+
+        var pieHtml = GenerateLabelPieFigure(ranked, grandTotal, shownTotal, "./");
+        if (pieHtml.Length > 0)
+        {
+            builder.AppendLiteral("<h2>ラベル別 Pull Request 数（上位");
+            builder.AppendFormatted(ranked.Length);
+            builder.AppendLiteral("）</h2>");
+            builder.AppendLiteral(Environment.NewLine);
+            builder.AppendLiteral(pieHtml);
+        }
+
         builder.AppendLiteral("<table class=\"label-index-table\">");
         builder.AppendLiteral(Environment.NewLine);
         builder.AppendLiteral("  <thead><tr><th class=\"sortable\" data-sort-type=\"text\">ラベル</th><th class=\"sortable\" data-sort-type=\"number\">PR数</th></tr></thead>");
@@ -402,6 +502,191 @@ internal static class HtmlGenerator
         builder.AppendLiteral(Environment.NewLine);
 
         return GenerateLabelPage(HtmlPageKind.LabelIndex, "ラベル一覧", builder.ToStringAndClear(), GenerateLabelSortScript());
+    }
+
+    private static string GenerateLabelPieFigure(
+        ReadOnlySpan<(string Label, string? Color, int Count)> slices,
+        int grandTotal,
+        int shownTotal,
+        string labelHrefPrefix)
+    {
+        const double CenterX = 150d;
+        const double CenterY = 150d;
+        const double OuterRadius = 140d;
+        const double InnerRadius = 78d;
+
+        if (slices.Length < MinPieSliceCount || shownTotal == 0)
+            return string.Empty;
+
+        // Accumulated once so the last slice closes exactly on 2π instead of drifting.
+        Span<double> angles = stackalloc double[slices.Length + 1];
+        var accumulated = 0;
+        angles[0] = 0d;
+        for (var i = 0; i < slices.Length; i++)
+        {
+            accumulated += slices[i].Count;
+            angles[i + 1] = 2d * Math.PI * accumulated / shownTotal;
+        }
+
+        // Path coordinates go through the invariant culture: a comma decimal separator would
+        // silently break every slice.
+        var builder = new DefaultInterpolatedStringHandler(0, 0, CultureInfo.InvariantCulture);
+        builder.AppendLiteral("<figure class=\"label-pie-figure\">");
+        builder.AppendLiteral(Environment.NewLine);
+        builder.AppendLiteral("  <div class=\"label-pie-body\">");
+        builder.AppendLiteral(Environment.NewLine);
+        builder.AppendLiteral("    <svg class=\"label-pie\" viewBox=\"0 0 300 300\" role=\"img\" aria-labelledby=\"label-pie-title\" aria-describedby=\"label-pie-desc\">");
+        builder.AppendLiteral(Environment.NewLine);
+        builder.AppendLiteral("      <title id=\"label-pie-title\">ラベル別 Pull Request 数の上位");
+        builder.AppendFormatted(slices.Length);
+        builder.AppendLiteral("</title>");
+        builder.AppendLiteral(Environment.NewLine);
+        builder.AppendLiteral("      <desc id=\"label-pie-desc\">上位");
+        builder.AppendFormatted(slices.Length);
+        builder.AppendLiteral("件の合計");
+        builder.AppendFormatted(shownTotal);
+        builder.AppendLiteral("件を100%とした内訳です。各スライスの番号は凡例の番号に対応します。ラベルごとの件数は凡例を参照してください。</desc>");
+        builder.AppendLiteral(Environment.NewLine);
+
+        for (var i = 0; i < slices.Length; i++)
+        {
+            var start = angles[i];
+            var end = angles[i + 1];
+            var largeArc = end - start > Math.PI ? " 1 " : " 0 ";
+
+            builder.AppendLiteral("      <path class=\"label-pie-slice\" fill=\"");
+            builder.AppendLiteral(PieSliceColors[i]);
+            builder.AppendLiteral("\" d=\"M ");
+            AppendPolarPoint(ref builder, CenterX, CenterY, OuterRadius, start);
+            builder.AppendLiteral(" A ");
+            builder.AppendFormatted(OuterRadius);
+            builder.AppendLiteral(" ");
+            builder.AppendFormatted(OuterRadius);
+            builder.AppendLiteral(" 0");
+            builder.AppendLiteral(largeArc);
+            builder.AppendLiteral("1 ");
+            AppendPolarPoint(ref builder, CenterX, CenterY, OuterRadius, end);
+            builder.AppendLiteral(" L ");
+            AppendPolarPoint(ref builder, CenterX, CenterY, InnerRadius, end);
+            builder.AppendLiteral(" A ");
+            builder.AppendFormatted(InnerRadius);
+            builder.AppendLiteral(" ");
+            builder.AppendFormatted(InnerRadius);
+            builder.AppendLiteral(" 0");
+            builder.AppendLiteral(largeArc);
+            builder.AppendLiteral("0 ");
+            AppendPolarPoint(ref builder, CenterX, CenterY, InnerRadius, start);
+            builder.AppendLiteral(" Z\"><title>");
+            builder.AppendFormatted(i + 1);
+            builder.AppendLiteral(". ");
+            builder.AppendLiteral(HtmlEncoder.Default.Encode(slices[i].Label));
+            builder.AppendLiteral(" — ");
+            builder.AppendFormatted(slices[i].Count);
+            builder.AppendLiteral(" PRs (");
+            builder.AppendFormatted(slices[i].Count * 100d / shownTotal, "0.0");
+            builder.AppendLiteral("%)</title></path>");
+            builder.AppendLiteral(Environment.NewLine);
+        }
+
+        // Numbers come after every slice so a neighbouring stroke cannot paint over them.
+        for (var i = 0; i < slices.Length; i++)
+        {
+            var middleAngle = (angles[i] + angles[i + 1]) / 2d;
+
+            builder.AppendLiteral("      <text class=\"label-pie-number\" aria-hidden=\"true\" fill=\"");
+            builder.AppendLiteral(PieSliceNumberColor(i));
+            builder.AppendLiteral("\" x=\"");
+            builder.AppendFormatted(CenterX + (Math.Sin(middleAngle) * ((OuterRadius + InnerRadius) / 2d)), "0.##");
+            builder.AppendLiteral("\" y=\"");
+            builder.AppendFormatted(CenterY - (Math.Cos(middleAngle) * ((OuterRadius + InnerRadius) / 2d)), "0.##");
+            builder.AppendLiteral("\">");
+            builder.AppendFormatted(i + 1);
+            builder.AppendLiteral("</text>");
+            builder.AppendLiteral(Environment.NewLine);
+        }
+
+        builder.AppendLiteral("      <text class=\"label-pie-total\" aria-hidden=\"true\" x=\"");
+        builder.AppendFormatted(CenterX);
+        builder.AppendLiteral("\" y=\"");
+        builder.AppendFormatted(CenterY - 2d);
+        builder.AppendLiteral("\">");
+        builder.AppendFormatted(shownTotal);
+        builder.AppendLiteral("</text>");
+        builder.AppendLiteral(Environment.NewLine);
+        builder.AppendLiteral("      <text class=\"label-pie-total-label\" aria-hidden=\"true\" x=\"");
+        builder.AppendFormatted(CenterX);
+        builder.AppendLiteral("\" y=\"");
+        builder.AppendFormatted(CenterY + 20d);
+        builder.AppendLiteral("\">上位");
+        builder.AppendFormatted(slices.Length);
+        builder.AppendLiteral("件の合計</text>");
+        builder.AppendLiteral(Environment.NewLine);
+        builder.AppendLiteral("    </svg>");
+        builder.AppendLiteral(Environment.NewLine);
+
+        // The legend lives outside the SVG so browser font sizing, wrapping, text selection and
+        // focus rings all behave normally. It also carries the only links: repeating them on the
+        // slices would double the tab stops and read every label out twice.
+        // The rows are laid out by the <ol> itself (the <li> elements are display: contents), which
+        // costs the list its implicit roles in some browsers — hence the explicit ones.
+        builder.AppendLiteral("    <ol class=\"label-pie-legend\" role=\"list\">");
+        builder.AppendLiteral(Environment.NewLine);
+        for (var i = 0; i < slices.Length; i++)
+        {
+            var (label, color, count) = slices[i];
+            var encodedLabel = HtmlEncoder.Default.Encode(label);
+
+            builder.AppendLiteral("      <li role=\"listitem\"><span class=\"label-pie-no\" aria-hidden=\"true\" style=\"background-color: ");
+            builder.AppendLiteral(PieSliceColors[i]);
+            builder.AppendLiteral("; color: ");
+            builder.AppendLiteral(PieSliceNumberColor(i));
+            builder.AppendLiteral(";\">");
+            builder.AppendFormatted(i + 1);
+            builder.AppendLiteral("</span><a href=\"");
+            builder.AppendLiteral(labelHrefPrefix);
+            builder.AppendLiteral(SanitizeLabelForPath(label));
+            builder.AppendLiteral("/index.html\"><span");
+            AppendIndexBadgeStyle(ref builder, color);
+            builder.AppendLiteral(">");
+            builder.AppendLiteral(encodedLabel);
+            builder.AppendLiteral("</span></a><span class=\"label-pie-count\">");
+            builder.AppendFormatted(count);
+            builder.AppendLiteral("<span class=\"label-pie-unit\"> PRs</span></span><span class=\"label-pie-pct\">");
+            builder.AppendFormatted(count * 100d / shownTotal, "0.0");
+            builder.AppendLiteral("%</span></li>");
+            builder.AppendLiteral(Environment.NewLine);
+        }
+        builder.AppendLiteral("    </ol>");
+        builder.AppendLiteral(Environment.NewLine);
+        builder.AppendLiteral("  </div>");
+        builder.AppendLiteral(Environment.NewLine);
+
+        builder.AppendLiteral("  <figcaption>上位");
+        builder.AppendFormatted(slices.Length);
+        builder.AppendLiteral("件で全");
+        builder.AppendFormatted(grandTotal);
+        builder.AppendLiteral("件中");
+        builder.AppendFormatted(shownTotal);
+        builder.AppendLiteral("件（");
+        builder.AppendFormatted(shownTotal * 100d / grandTotal, "0.0");
+        builder.AppendLiteral("%）を占めます。ラベルは1つの Pull Request に複数付くため、比率は PR 数ではなくラベル付与の延べ数に対するものです。</figcaption>");
+        builder.AppendLiteral(Environment.NewLine);
+        builder.AppendLiteral("</figure>");
+        builder.AppendLiteral(Environment.NewLine);
+
+        return builder.ToStringAndClear();
+    }
+
+    private static void AppendPolarPoint(ref DefaultInterpolatedStringHandler builder, double centerX, double centerY, double radius, double angle)
+    {
+        builder.AppendFormatted(centerX + (Math.Sin(angle) * radius), "0.##");
+        builder.AppendLiteral(" ");
+        builder.AppendFormatted(centerY - (Math.Cos(angle) * radius), "0.##");
+    }
+
+    private static string PieSliceNumberColor(int index)
+    {
+        return (index & 1) == 0 ? "#ffffff" : "#000000";
     }
 
     // Client-side column sorting for the labels/index.html table — no third-party library.
@@ -817,21 +1102,19 @@ document.addEventListener('DOMContentLoaded', function() {
     };
 
     // outputs/index.html: month <details> list, latest digest stats, scroll-to-top button.
-    private const string IndexCss =
-        BaseCss + DetailsCss + DayListCss + StatsCss + ScrollToTopCss;
+    private const string IndexCss = BaseCss + DetailsCss + DayListCss + StatsCss + ScrollToTopCss;
 
     // outputs/yyyy/MM/dd.html: markdown body (code/table/strong), view tabs, label groups, floating TOC.
     private const string DailyCss =
         BaseCss + DetailsCss + MarkdownContentCss + TableCss + TableOfContentsCss +
-        ViewTabsCss + LabelGroupCss + LabelPrCountCss + LabelPrListCss + FloatingTocCss + ScrollToTopCss;
+        ViewTabsCss + LabelGroupCss + LabelPrCountCss + LabelPrListCss + LabelPieCss +
+        FloatingTocCss + ScrollToTopCss;
 
     // outputs/labels/index.html: sortable label table only (no <details>, no scroll-to-top button).
-    private const string LabelIndexCss =
-        BaseCss + TableCss + LabelPrCountCss + LabelIndexTableCss;
+    private const string LabelIndexCss = BaseCss + TableCss + LabelPrCountCss + LabelIndexTableCss + LabelPieCss;
 
     // outputs/labels/{label}/index.html: a single PR list plus the scroll-to-top button.
-    private const string LabelPageCss =
-        BaseCss + LabelPrListCss + ScrollToTopCss;
+    private const string LabelPageCss = BaseCss + LabelPrListCss + ScrollToTopCss;
 
     // Layout shared by every page: navbar, header, content card, base typography and footer.
     private const string BaseCss = """
@@ -1690,8 +1973,173 @@ document.addEventListener('DOMContentLoaded', function() {
 
 """;
 
-    // Sort indicators for the label table on labels/index.html.
+    private const string LabelPieCss = """
+    .label-pie-figure {
+      margin: 0 0 24px 0;
+    }
+
+    /* The legend column is sized to its longest row rather than to the card, so the counts sit
+       next to the labels instead of being pushed against the right edge. */
+    .label-pie-body {
+      display: grid;
+      grid-template-columns: minmax(180px, 260px) minmax(0, max-content);
+      gap: 24px;
+      align-items: center;
+      justify-content: start;
+    }
+
+    .label-pie {
+      width: 100%;
+      height: auto;
+    }
+
+    .label-pie-slice {
+      stroke: #ffffff;
+      stroke-width: 2;
+    }
+
+    .label-pie-number {
+      font-size: 13px;
+      font-weight: 700;
+      text-anchor: middle;
+      dominant-baseline: middle;
+    }
+
+    .label-pie-total {
+      font-size: 28px;
+      font-weight: 700;
+      text-anchor: middle;
+      fill: currentColor;
+    }
+
+    .label-pie-total-label {
+      font-size: 11px;
+      text-anchor: middle;
+      fill: currentColor;
+      opacity: 0.65;
+    }
+
+    /* One grid for the whole legend rather than one per row: the columns line up across rows and
+       each is only as wide as its widest cell, so the counts stay next to the labels. The rows
+       are laid out by the <ol>, so the <li> elements carry explicit roles in the markup. */
+    .label-pie-legend {
+      display: grid;
+      grid-template-columns: 22px minmax(0, max-content) max-content max-content;
+      gap: 8px 16px;
+      align-items: center;
+      list-style: none;
+      margin: 0;
+      padding: 0;
+      font-size: 14px;
+    }
+
+    .label-pie-legend li {
+      display: contents;
+    }
+
+    .label-pie-no {
+      width: 22px;
+      height: 22px;
+      border-radius: 50%;
+      display: grid;
+      place-items: center;
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .label-pie-legend a {
+      justify-self: start;
+      text-decoration: none;
+      border-radius: 4px;
+    }
+
+    .label-pie-legend a:hover span {
+      outline: 2px solid currentColor;
+      outline-offset: 1px;
+    }
+
+    .label-pie-legend a:focus-visible {
+      outline: 3px solid #2563eb;
+      outline-offset: 2px;
+    }
+
+    .label-pie-count,
+    .label-pie-pct {
+      font-variant-numeric: tabular-nums;
+      text-align: right;
+      color: #6b7280;
+    }
+
+    .label-pie-figure figcaption {
+      margin-top: 16px;
+      font-size: 13px;
+      color: #6b7280;
+    }
+
+    /* Below this the legend has to give up a column to keep the longest label on one line. */
+    @media (max-width: 768px) {
+      .label-pie-body {
+        grid-template-columns: 1fr;
+        justify-content: stretch;
+      }
+
+      .label-pie {
+        max-width: 280px;
+        margin: 0 auto;
+      }
+    }
+
+    /* On a phone the unit is what gives way first — the heading above already says these are
+       Pull Request counts, and the caption repeats it. */
+    @media (max-width: 480px) {
+      .label-pie-unit {
+        display: none;
+      }
+    }
+
+    @media (prefers-color-scheme: dark) {
+      .label-pie-slice {
+        stroke: #1f2937;
+      }
+
+      .label-pie-count,
+      .label-pie-pct,
+      .label-pie-figure figcaption {
+        color: #9ca3af;
+      }
+
+      .label-pie-legend a:focus-visible {
+        outline-color: #93c5fd;
+      }
+    }
+
+    /* Windows high contrast: keep the slice colours, separate them with the system text colour. */
+    @media (forced-colors: active) {
+      .label-pie-slice {
+        stroke: CanvasText;
+        forced-color-adjust: none;
+      }
+
+      .label-pie-no {
+        forced-color-adjust: none;
+      }
+    }
+
+
+""";
+
     private const string LabelIndexTableCss = """
+    .label-index-table {
+      width: auto;
+      max-width: 100%;
+    }
+
+    .label-index-table th:last-child,
+    .label-index-table td.label-pr-count {
+      white-space: nowrap;
+      text-align: right;
+    }
+
     .label-index-table th.sortable {
       cursor: pointer;
       user-select: none;
