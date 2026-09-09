@@ -314,15 +314,15 @@ async ValueTask CreateHtml(string archivesDir, string outputsDir)
             Directory.CreateDirectory(Path.Combine(outputsDir, year));
         }
 
-        foreach (var monthDirss in Directory.EnumerateDirectories(yearDirs))
+        foreach (var monthDirs in Directory.EnumerateDirectories(yearDirs))
         {
-            var month = Path.GetFileName(monthDirss);
+            var month = Path.GetFileName(monthDirs);
             if (!Directory.Exists(Path.Combine(outputsDir, year, month)))
             {
                 Directory.CreateDirectory(Path.Combine(outputsDir, year, month));
             }
 
-            await Parallel.ForEachAsync(Directory.EnumerateFiles(monthDirss, "*.md"), async (dayFiles, _) =>
+            await Parallel.ForEachAsync(Directory.EnumerateFiles(monthDirs, "*.md"), async (dayFiles, _) =>
             {
                 var day = Path.GetFileNameWithoutExtension(dayFiles);
                 var markdown = await File.ReadAllTextAsync(dayFiles);
@@ -346,6 +346,8 @@ async ValueTask CreateLabelPageHtml(string archivesDir, string outputsDir)
     var comparer = StringComparerOptions.DefaultComparer;
     var labelTable = new Dictionary<string, LabelPullRequestInfo>(256);
 
+    // Newest archive first: this is the order the entries end up in on every label page.
+    var archives = new List<(string Target, string Path)>(512);
     foreach (var yearDir in Directory.EnumerateDirectories(archivesDir).OrderDescending(comparer))
     {
         var year = Path.GetFileName(yearDir);
@@ -355,31 +357,40 @@ async ValueTask CreateLabelPageHtml(string archivesDir, string outputsDir)
             foreach (var mdFilePath in Directory.EnumerateFiles(monthDir, "*.md").OrderDescending(comparer))
             {
                 var day = Path.GetFileNameWithoutExtension(mdFilePath);
-                var target = $"{year}/{month}/{day}";
+                archives.Add(($"{year}/{month}/{day}", mdFilePath));
+            }
+        }
+    }
 
-                var markdown = await File.ReadAllTextAsync(mdFilePath);
-                var document = Markdown.Parse(markdown, MarkdownOptions.Pipeline);
-                var analyzerResult = PullRequestAnalyzer.Analyze(document);
+    var analyzed = new PullRequestAnalyzer.AnalysisResults[archives.Count];
+    await Parallel.ForEachAsync(Enumerable.Range(0, archives.Count), async (i, cancellationToken) =>
+    {
+        var markdown = await File.ReadAllTextAsync(archives[i].Path, cancellationToken);
+        analyzed[i] = PullRequestAnalyzer.Analyze(Markdown.Parse(markdown, MarkdownOptions.Pipeline));
+    });
 
-                foreach (var (label, metadata) in analyzerResult.LabelMap)
-                {
-                    ref var aggregate = ref CollectionsMarshal.GetValueRefOrAddDefault(labelTable, label, out var exists);
-                    if (!exists)
-                    {
-                        aggregate = new LabelPullRequestInfo();
-                    }
+    for (var i = 0; i < archives.Count; i++)
+    {
+        var target = archives[i].Target;
+        var analyzerResult = analyzed[i];
 
-                    // Adopt the first color we encounter for the label (colors are stable per label).
-                    if (string.IsNullOrEmpty(aggregate!.Color) && analyzerResult.LabelColorGroups.TryGetValue(label, out var color))
-                    {
-                        aggregate.Color = color;
-                    }
+        foreach (var (label, metadata) in analyzerResult.LabelMap)
+        {
+            ref var aggregate = ref CollectionsMarshal.GetValueRefOrAddDefault(labelTable, label, out var exists);
+            if (!exists)
+            {
+                aggregate = new LabelPullRequestInfo();
+            }
 
-                    foreach (var m in metadata)
-                    {
-                        aggregate.Entries.Add((target, m));
-                    }
-                }
+            // Adopt the first color we encounter for the label (colors are stable per label).
+            if (string.IsNullOrEmpty(aggregate!.Color) && analyzerResult.LabelColorGroups.TryGetValue(label, out var color))
+            {
+                aggregate.Color = color;
+            }
+
+            foreach (var m in metadata)
+            {
+                aggregate.Entries.Add((target, m));
             }
         }
     }
@@ -395,15 +406,17 @@ async ValueTask CreateLabelPageHtml(string archivesDir, string outputsDir)
     await File.WriteAllTextAsync(Path.Combine(labelsDir, "index.html"), HtmlGenerator.GenerateLabelIndexHtml(labelTable));
 
     // outputs/labels/{sanitized}/index.html
-    foreach (var (label, info) in labelTable)
+    await Parallel.ForEachAsync(labelTable, async (key, _) =>
     {
+        var label = key.Key;
+        var info = key.Value;
         var labelDir = Path.Combine(labelsDir, HtmlGenerator.SanitizeLabelForPath(label));
         if (!Directory.Exists(labelDir))
         {
             Directory.CreateDirectory(labelDir);
         }
         await File.WriteAllTextAsync(Path.Combine(labelDir, "index.html"), HtmlGenerator.GenerateLabelPageHtml(label, info));
-    }
+    });
 }
 
 internal sealed class PullRequestInfo
