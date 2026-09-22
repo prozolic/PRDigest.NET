@@ -4,7 +4,9 @@ using System.Buffers;
 using System.Collections.Immutable;
 using System.Globalization;
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using System.Text.Encodings.Web;
+using System.Text.Unicode;
 
 namespace PRDigest.NET;
 
@@ -14,9 +16,14 @@ internal static class HtmlGenerator
     {
         Index, // outputs/index.html
         Daily, // outputs/yyyy/MM/dd.html
+        Monthly, // outputs/yyyy/MM/index.html
         LabelIndex, // outputs/labels/index.html
         LabelPage, //outputs/labels/{label}/index.html
     }
+
+    // Escapes the HTML syntax characters but leaves Japanese as-is: HtmlEncoder.Default would turn
+    // every character into a numeric reference and triple the size of the monthly page.
+    private static readonly HtmlEncoder TextEncoder = HtmlEncoder.Create(UnicodeRanges.All);
 
     private static readonly SearchValues<char> AllowedLabelPathChars =
         SearchValues.Create("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-");
@@ -31,6 +38,12 @@ internal static class HtmlGenerator
 
     private const int MinPieSliceCount = 3;
 
+    private const int OverviewClampChars = 200;
+
+    private const int MonthlyContentCharsPerPullRequest = 1300;
+
+    private const int MonthlyContentFixedChars = 8 * 1024;
+
     private static bool IsYearDirectoryName(string path)
     {
         var name = Path.GetFileName(path);
@@ -42,7 +55,13 @@ internal static class HtmlGenerator
         return false;
     }
 
-    public static string GenerateIndex(string archivesDir, string outputsDir)
+    private static bool IsDayHtmlFileName(string path)
+    {
+        var name = Path.GetFileNameWithoutExtension(path.AsSpan());
+        return name.Length == 2 && name[0].IsDigit() && name[1].IsDigit();
+    }
+
+    public static string GenerateIndex(string outputsDir, ReadOnlySpan<ArchiveAnalysis> analyzedArchives)
     {
         var comparer = StringComparerOptions.DefaultComparer;
 
@@ -61,6 +80,12 @@ internal static class HtmlGenerator
                 detailsBuilder.AppendLiteral("年");
                 detailsBuilder.AppendLiteral(month);
                 detailsBuilder.AppendLiteral("月");
+                // The month page is reachable without expanding the day list.
+                detailsBuilder.AppendLiteral("<a class=\"month-link\" href=\"./");
+                detailsBuilder.AppendLiteral(year);
+                detailsBuilder.AppendLiteral("/");
+                detailsBuilder.AppendLiteral(month);
+                detailsBuilder.AppendLiteral("/index.html\">ダイジェスト</a>");
                 detailsBuilder.AppendLiteral("</summary>");
                 detailsBuilder.AppendLiteral(Environment.NewLine);
                 detailsBuilder.AppendLiteral($"   <ul class=\"daylist\">");
@@ -68,6 +93,9 @@ internal static class HtmlGenerator
 
                 foreach (var htmlPath in Directory.GetFiles(monthDir, "*.html").Order(comparer))
                 {
+                    // Skip the month page itself: only dd.html files are day entries.
+                    if (!IsDayHtmlFileName(htmlPath)) continue;
+
                     detailsBuilder.AppendLiteral($"     <li class=\"dayitem\"><a href=\"./");
                     detailsBuilder.AppendLiteral(year);
                     detailsBuilder.AppendLiteral("/");
@@ -99,17 +127,23 @@ internal static class HtmlGenerator
             var lastedYear = Path.GetFileName(latestYearDir);
             var lastedMonthDirs = Directory.GetDirectories(latestYearDir!).OrderDescending(comparer).FirstOrDefault();
             var lastedMonth = Path.GetFileName(lastedMonthDirs);
-            var lastedDayHtmlPath = Directory.GetFiles(lastedMonthDirs!, "*.html").OrderDescending(comparer).FirstOrDefault();
+            var lastedDayHtmlPath = Directory.GetFiles(lastedMonthDirs!, "*.html").Where(IsDayHtmlFileName).OrderDescending(comparer).FirstOrDefault();
 
             var lastedDay = Path.GetFileNameWithoutExtension(lastedDayHtmlPath);
-            var latestMarkdownPath = Path.Combine(archivesDir, lastedYear!, lastedMonth!, $"{lastedDay}.md");
+
+            PullRequestAnalyzer.AnalysisResults? analyzerResult = null;
+            foreach (var archive in analyzedArchives)
+            {
+                if (archive.Day == lastedDay && archive.Month == lastedMonth && archive.Year == lastedYear)
+                {
+                    analyzerResult = archive.Result;
+                    break;
+                }
+            }
 
             var statsHtml = "";
-            if (File.Exists(latestMarkdownPath))
+            if (analyzerResult is not null)
             {
-                var markdownContent = File.ReadAllText(latestMarkdownPath);
-                var document = Markdown.Parse(markdownContent, MarkdownOptions.Pipeline);
-                var analyzerResult = PullRequestAnalyzer.Analyze(document);
 
                 statsHtml = $"""
                                 <div class="stats-grid">
@@ -159,9 +193,17 @@ internal static class HtmlGenerator
             floatingTocScript: "");
     }
 
-    public static string GenerateHtmlFromMarkdown(string startTargetDate, string markdownContent)
+    public static string GenerateHtmlFromMarkdown(string year, string month, string day, string markdownContent)
+    {
+        return GenerateHtmlFromMarkdown(year, month, day, markdownContent, out _);
+    }
+
+    public static string GenerateHtmlFromMarkdown(string year, string month, string day, string markdownContent, out PullRequestAnalyzer.AnalysisResults analysis)
     {
         var document = Markdown.Parse(markdownContent, MarkdownOptions.Pipeline);
+
+        // Before rendering: an unquoted List<T> in a summary would otherwise vanish as an unknown tag.
+        PullRequestAnalyzer.EscapeStrayHtml(document);
         var contentHtml = Markdown.ToHtml(document, MarkdownOptions.Pipeline);
 
         // Split contentHtml into TOC part and PR details part
@@ -194,6 +236,7 @@ internal static class HtmlGenerator
         }
 
         var analyzerResult = PullRequestAnalyzer.Analyze(document);
+        analysis = analyzerResult;
         var categoryViewHtml = GenerateCategorizedTocHtml(analyzerResult);
         var labelViewHtml = GenerateLabelViewHtml(analyzerResult);
 
@@ -212,7 +255,11 @@ internal static class HtmlGenerator
 <div id="toc-backdrop" class="toc-backdrop"></div>
 """;
 
+        // The daily page sits next to the monthly page (outputs/yyyy/MM/index.html), so both links are relative.
         var content = $"""
+      <nav class="day-breadcrumb" aria-label="パンくずリスト">
+        <a href="../../index.html">ホーム</a><span class="day-breadcrumb-sep" aria-hidden="true">›</span><a href="./index.html">{year}年{month}月</a><span class="day-breadcrumb-sep" aria-hidden="true">›</span><span aria-current="page">{day}日</span>
+      </nav>
       <h2>注意点</h2>
       <p>このページは、<a href="https://github.com/dotnet/runtime">dotnet/runtime</a>リポジトリにマージされたPull Requestを自動的に収集し、その内容をAIが要約した内容を表示しています。そのため、必ずしも正確な要約ではない場合があります。</p>
       <hr>
@@ -235,7 +282,7 @@ internal static class HtmlGenerator
 
         return GenerateTemplateHtml(
             pageKind: HtmlPageKind.Daily,
-            title: $"Pull Request on {startTargetDate}",
+            title: $"Pull Request on {year}年{month}月{day}日",
             subTitle: "dotnet/runtimeにマージされたPull RequestをAIで日本語要約", 
             content: content,
             viewScript: GenerateViewScript(), 
@@ -516,7 +563,9 @@ internal static class HtmlGenerator
         const double InnerRadius = 78d;
 
         if (slices.Length < MinPieSliceCount || shownTotal == 0)
+        {
             return string.Empty;
+        }
 
         // Accumulated once so the last slice closes exactly on 2π instead of drifting.
         Span<double> angles = stackalloc double[slices.Length + 1];
@@ -785,6 +834,465 @@ document.addEventListener('DOMContentLoaded', function() {
         builder.AppendLiteral(Environment.NewLine);
 
         return GenerateLabelPage(HtmlPageKind.LabelPage, $"ラベル: {HtmlEncoder.Default.Encode(label)}", builder.ToStringAndClear(), GenerateScrollToTopHtml());
+    }
+
+    public static string GenerateMonthlyPageHtml(string year, string month, ReadOnlySpan<(string Day, PullRequestAnalyzer.AnalysisResults Result)> days)
+    {
+        var totalCount = 0;
+        var communityCount = 0;
+        var agentCount = 0;
+        var botCount = 0;
+        var labelTotals = new Dictionary<string, int>(256);
+        var labelColors = new Dictionary<string, string>(256);
+
+        foreach (var (_, result) in days)
+        {
+            totalCount += result.PullRequestTotalCount;
+            communityCount += result.PullRequestCountForCommunity;
+            agentCount += result.PullRequestCountForAiAgent;
+            botCount += result.PullRequestCountForBot;
+
+            foreach (var (label, metadataList) in result.LabelMap)
+            {
+                ref var count = ref CollectionsMarshal.GetValueRefOrAddDefault(labelTotals, label, out _);
+                count += metadataList.Length;
+
+                if (result.LabelColorGroups.TryGetValue(label, out var color))
+                {
+                    ref var labelColor = ref CollectionsMarshal.GetValueRefOrAddDefault(labelColors, label, out _);
+                    labelColor = color;
+                }
+            }
+        }
+
+        // The literal-length hint sizes the initial buffer. A month runs to ~1,100 chars per PR, so
+        // renting that up front skips the dozen doubling steps (and the intermediate pooled
+        // arrays each of them leaves behind) that a 256-char start would go through.
+        var builder = new DefaultInterpolatedStringHandler(MonthlyContentCharsPerPullRequest * totalCount + MonthlyContentFixedChars, 0);
+        builder.AppendLiteral("<p><a href=\"../../index.html\">← アーカイブ一覧へ戻る</a></p>");
+        builder.AppendLiteral(Environment.NewLine);
+        builder.AppendLiteral("<p>このページは、<a href=\"https://github.com/dotnet/runtime\">dotnet/runtime</a>リポジトリにマージされたPull Requestを自動的に収集し、その内容をAIが要約した内容を表示しています。そのため、必ずしも正確な要約ではない場合があります。</p>");
+        builder.AppendLiteral(Environment.NewLine);
+
+        AppendMonthlyStats(ref builder, totalCount, communityCount, agentCount, botCount, labelTotals.Count, days.Length);
+
+        builder.AppendLiteral("<h2>日別 Pull Request 数</h2>");
+        builder.AppendLiteral(Environment.NewLine);
+        builder.AppendLiteral(GenerateDailyBarFigure(month, days));
+
+        // Ordered by PR count, then by name so a tie never reorders the chart between builds.
+        var ranked = labelTotals
+            .OrderByDescending(kv => kv.Value)
+            .ThenBy(kv => kv.Key, StringComparer.Ordinal)
+            .Take(MaxPieSliceCount)
+            .Select(kv => (kv.Key, labelColors.GetValueOrDefault(kv.Key), kv.Value))
+            .ToArray();
+
+        var grandTotal = 0;
+        foreach (var (_, count) in labelTotals)
+        {
+            grandTotal += count;
+        }
+
+        var shownTotal = 0;
+        foreach (var slice in ranked)
+        {
+            shownTotal += slice.Item3;
+        }
+
+        // The monthly page sits at outputs/yyyy/MM/index.html, the same depth as the daily pages.
+        var pieHtml = GenerateLabelPieFigure(ranked, grandTotal, shownTotal, "../../labels/");
+        if (pieHtml.Length > 0)
+        {
+            builder.AppendLiteral("<h2>ラベル別 Pull Request 数（上位");
+            builder.AppendFormatted(ranked.Length);
+            builder.AppendLiteral("）</h2>");
+            builder.AppendLiteral(Environment.NewLine);
+            builder.AppendLiteral(pieHtml);
+        }
+
+        builder.AppendLiteral("<h2>各 Pull Request の概要</h2>");
+        builder.AppendLiteral(Environment.NewLine);
+        builder.AppendLiteral("<p>この月にマージされた ");
+        builder.AppendFormatted(totalCount);
+        builder.AppendLiteral(" 件を新しい日から順に並べています。タイトルをクリックするとその日のページの該当箇所へ移動します。");
+        if (botCount > 0)
+        {
+            builder.AppendLiteral("Bot が作成した ");
+            builder.AppendFormatted(botCount);
+            builder.AppendLiteral(" 件はタイトルのみにして、各日の最後にまとめています。");
+        }
+        builder.AppendLiteral("</p>");
+        builder.AppendLiteral(Environment.NewLine);
+
+        for (var i = days.Length - 1; i >= 0; i--)
+        {
+            AppendMonthlyDaySection(ref builder, year, month, days[i].Day, days[i].Result);
+        }
+
+        var floatingTocHtml = GenerateMonthlyFloatingTocHtml(month, days);
+
+        return GenerateTemplateHtml(
+            pageKind: HtmlPageKind.Monthly,
+            title: $"{year}年{month}月のダイジェスト",
+            subTitle: "dotnet/runtimeにマージされたPull RequestをAIで日本語要約",
+            content: builder.ToStringAndClear(),
+            viewScript: GenerateScrollToTopHtml() + GenerateOverviewClampScript(),
+            floatingTocHtml: floatingTocHtml,
+            floatingTocScript: GenerateFloatingTocScript());
+    }
+
+    private static void AppendMonthlyStats(
+        ref DefaultInterpolatedStringHandler builder,
+        int totalCount,
+        int communityCount,
+        int agentCount,
+        int botCount,
+        int labelCount,
+        int dayCount)
+    {
+        builder.AppendLiteral($$"""
+        <div class="stats-grid">
+            <div class="stat-card">
+                <div class="stat-value">{{totalCount}}</div>
+                <div class="stat-label">PR 数（Total）</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value">{{communityCount}}</div>
+                <div class="stat-label">PR 数（Community）</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value">{{agentCount}}</div>
+                <div class="stat-label">PR 数（AI Agent）</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value">{{botCount}}</div>
+                <div class="stat-label">PR 数（Bot）</div>
+            </div>
+        </div>
+        <div class="stats-label-row">
+            <div class="stat-card stat-card-label">
+                <div class="stat-value">{{labelCount}}</div>
+                <div class="stat-label">ラベルタイプ数</div>
+            </div>
+            <div class="stat-card stat-card-label">
+                <div class="stat-value">{{dayCount}}</div>
+                <div class="stat-label">更新日数</div>
+            </div>
+        </div>
+        """);
+        builder.AppendLiteral(Environment.NewLine);
+    }
+
+    private static string GenerateDailyBarFigure(string month, ReadOnlySpan<(string Day, PullRequestAnalyzer.AnalysisResults Result)> days)
+    {
+        const double BarWidth = 34d;
+        const double BarGap = 8d;
+        const double ChartHeight = 200d;
+        const double LabelHeight = 34d;
+
+        if (days.IsEmpty)
+        {
+            return string.Empty;
+        }
+
+        var maxCount = 0;
+        foreach (var (_, result) in days)
+        {
+            maxCount = Math.Max(maxCount, result.PullRequestTotalCount);
+        }
+        if (maxCount == 0)
+        {
+            return string.Empty;
+        }
+
+        var width = days.Length * (BarWidth + BarGap);
+
+        // Path coordinates go through the invariant culture: a comma decimal separator would silently break every bar.
+        var builder = new DefaultInterpolatedStringHandler(0, 0, CultureInfo.InvariantCulture);
+        builder.AppendLiteral("<figure class=\"month-bar-figure\">");
+        builder.AppendLiteral(Environment.NewLine);
+        builder.AppendLiteral("  <div class=\"month-bar-body\">");
+        builder.AppendLiteral(Environment.NewLine);
+        builder.AppendLiteral("    <svg class=\"month-bar\" viewBox=\"0 0 ");
+        builder.AppendFormatted(width, "0.##");
+        builder.AppendLiteral(" ");
+        builder.AppendFormatted(ChartHeight + LabelHeight, "0.##");
+        builder.AppendLiteral("\" width=\"");
+        builder.AppendFormatted(width, "0.##");
+        builder.AppendLiteral("\" height=\"");
+        builder.AppendFormatted(ChartHeight + LabelHeight, "0.##");
+        builder.AppendLiteral("\" role=\"img\" aria-label=\"日別の Pull Request 数\">");
+        builder.AppendLiteral(Environment.NewLine);
+
+        for (var i = 0; i < days.Length; i++)
+        {
+            var (day, result) = days[i];
+            var count = result.PullRequestTotalCount;
+            var barHeight = Math.Max(2d, count / (double)maxCount * ChartHeight);
+            var x = i * (BarWidth + BarGap);
+            var centerX = x + (BarWidth / 2d);
+
+            builder.AppendLiteral("      <a href=\"#day-");
+            builder.AppendLiteral(day);
+            builder.AppendLiteral("\"><rect x=\"");
+            builder.AppendFormatted(x, "0.##");
+            builder.AppendLiteral("\" y=\"");
+            builder.AppendFormatted(ChartHeight - barHeight, "0.##");
+            builder.AppendLiteral("\" width=\"");
+            builder.AppendFormatted(BarWidth, "0.##");
+            builder.AppendLiteral("\" height=\"");
+            builder.AppendFormatted(barHeight, "0.##");
+            builder.AppendLiteral("\" rx=\"3\"><title>");
+            builder.AppendLiteral(month);
+            builder.AppendLiteral("月");
+            builder.AppendLiteral(day);
+            builder.AppendLiteral("日 — ");
+            builder.AppendFormatted(count);
+            builder.AppendLiteral(" PRs</title></rect><text class=\"month-bar-value\" x=\"");
+            builder.AppendFormatted(centerX, "0.##");
+            builder.AppendLiteral("\" y=\"");
+            builder.AppendFormatted(Math.Max(11d, ChartHeight - barHeight - 5d), "0.##");
+            builder.AppendLiteral("\">");
+            builder.AppendFormatted(count);
+            builder.AppendLiteral("</text><text class=\"month-bar-day\" x=\"");
+            builder.AppendFormatted(centerX, "0.##");
+            builder.AppendLiteral("\" y=\"");
+            builder.AppendFormatted(ChartHeight + 16d, "0.##");
+            builder.AppendLiteral("\">");
+            builder.AppendLiteral(day);
+            builder.AppendLiteral("</text></a>");
+            builder.AppendLiteral(Environment.NewLine);
+        }
+
+        builder.AppendLiteral("    </svg>");
+        builder.AppendLiteral(Environment.NewLine);
+        builder.AppendLiteral("  </div>");
+        builder.AppendLiteral(Environment.NewLine);
+        builder.AppendLiteral("  <figcaption>日付をクリックするとその日のセクションへ移動します。</figcaption>");
+        builder.AppendLiteral(Environment.NewLine);
+        builder.AppendLiteral("</figure>");
+        builder.AppendLiteral(Environment.NewLine);
+
+        return builder.ToStringAndClear();
+    }
+
+    private static void AppendMonthlyDaySection(
+        ref DefaultInterpolatedStringHandler builder,
+        string year,
+        string month,
+        string day,
+        PullRequestAnalyzer.AnalysisResults result)
+    {
+        var all = result.AllPullRequestMetadataSpan;
+        var botTotal = 0;
+        foreach (var metadata in all)
+        {
+            if (metadata.IsBot) botTotal++;
+        }
+
+        builder.AppendLiteral("<h2 id=\"day-");
+        builder.AppendLiteral(day);
+        builder.AppendLiteral("\" class=\"month-day-head\">");
+        builder.AppendLiteral(year);
+        builder.AppendLiteral("年");
+        builder.AppendLiteral(month);
+        builder.AppendLiteral("月");
+        builder.AppendLiteral(day);
+        builder.AppendLiteral("日 <span class=\"label-pr-count\">(");
+        builder.AppendFormatted(all.Length);
+        builder.AppendLiteral(" PRs)</span>");
+        if (botTotal > 0)
+        {
+            builder.AppendLiteral("<span class=\"month-day-note\">うち Bot ");
+            builder.AppendFormatted(botTotal);
+            builder.AppendLiteral(" 件</span>");
+        }
+        builder.AppendLiteral(" <a class=\"month-day-link\" href=\"./");
+        builder.AppendLiteral(day);
+        builder.AppendLiteral(".html\">この日のページ →</a></h2>");
+        builder.AppendLiteral(Environment.NewLine);
+
+        // Community and AI Agent PRs keep the archive's order; bot PRs are collected below them.
+        foreach (var metadata in all)
+        {
+            if (metadata.IsBot) continue;
+            AppendMonthlyPullRequestCard(ref builder, day, metadata, result);
+        }
+
+        if (botTotal == 0)
+            return;
+
+        builder.AppendLiteral("<div class=\"month-bot-group\">");
+        builder.AppendLiteral(Environment.NewLine);
+        builder.AppendLiteral("  <h3 class=\"month-bot-head\">Bot PRs <span class=\"label-pr-count\">(");
+        builder.AppendFormatted(botTotal);
+        builder.AppendLiteral(" PRs)</span></h3>");
+        builder.AppendLiteral(Environment.NewLine);
+
+        foreach (var metadata in all)
+        {
+            if (!metadata.IsBot) continue;
+            AppendMonthlyBotRow(ref builder, day, metadata);
+        }
+
+        builder.AppendLiteral("</div>");
+        builder.AppendLiteral(Environment.NewLine);
+    }
+
+    private static void AppendMonthlyPullRequestCard(
+        ref DefaultInterpolatedStringHandler builder,
+        string day,
+        PullRequestAnalyzer.Metadata metadata,
+        PullRequestAnalyzer.AnalysisResults result)
+    {
+        var textEncoder = TextEncoder;
+        builder.AppendLiteral("<article class=\"month-pr\">");
+        builder.AppendLiteral(Environment.NewLine);
+        builder.AppendLiteral("  <h4 class=\"month-pr-title\"><a href=\"./");
+        builder.AppendLiteral(day);
+        builder.AppendLiteral(".html#");
+        builder.AppendLiteral(metadata.PullRequestNumber);
+        builder.AppendLiteral("\">");
+        builder.AppendLiteral(textEncoder.Encode(metadata.TitleText));
+        builder.AppendLiteral("</a></h4>");
+        builder.AppendLiteral(Environment.NewLine);
+
+        builder.AppendLiteral("  <p class=\"month-pr-meta\">");
+        if (metadata.Author.Length > 0)
+        {
+            builder.AppendLiteral("<a href=\"");
+            builder.AppendLiteral(metadata.AuthorUrl.Length > 0
+                ? textEncoder.Encode(metadata.AuthorUrl)
+                : $"https://github.com/{textEncoder.Encode(metadata.Author)}");
+            builder.AppendLiteral("\">@");
+            builder.AppendLiteral(textEncoder.Encode(metadata.Author));
+            builder.AppendLiteral("</a><span class=\"month-pr-sep\">・</span>");
+        }
+        builder.AppendLiteral("<a href=\"https://github.com/");
+        builder.AppendLiteral(Constants.FullRepository);
+        builder.AppendLiteral("/pull/");
+        builder.AppendLiteral(metadata.PullRequestNumber);
+        builder.AppendLiteral("\">GitHub</a>");
+
+        if (metadata.Labels.Length > 0)
+        {
+            builder.AppendLiteral("<span class=\"month-pr-sep\">・</span>");
+        }
+
+        foreach (var label in metadata.Labels)
+        {
+            builder.AppendLiteral("<a style=\"text-decoration:none;\" href=\"../../labels/");
+            builder.AppendLiteral(SanitizeLabelForPath(label));
+            builder.AppendLiteral("/index.html\"><span");
+            AppendIndexBadgeStyle(ref builder, result.LabelColorGroups.GetValueOrDefault(label));
+            builder.AppendLiteral(">");
+            builder.AppendLiteral(textEncoder.Encode(label));
+            builder.AppendLiteral("</span></a>");
+        }
+        builder.AppendLiteral("</p>");
+        builder.AppendLiteral(Environment.NewLine);
+
+        if (!result.SummaryMap.TryGetValue(metadata.PullRequestNumber, out var summary) || summary.OverviewHtml.Length == 0)
+        {
+            builder.AppendLiteral("</article>");
+            builder.AppendLiteral(Environment.NewLine);
+            return;
+        }
+
+        var clamped = summary.Overview.Length > OverviewClampChars || summary.HasMoreBlocks;
+        builder.AppendLiteral(clamped ? "  <div class=\"month-pr-overview clamped\">" : "  <div class=\"month-pr-overview\">");
+        builder.AppendLiteral(summary.OverviewHtml);
+        builder.AppendLiteral("</div>");
+        builder.AppendLiteral(Environment.NewLine);
+
+        if (clamped)
+        {
+            builder.AppendLiteral("  <button class=\"month-pr-more\" type=\"button\">続きを読む</button>");
+            builder.AppendLiteral(Environment.NewLine);
+        }
+
+        builder.AppendLiteral("</article>");
+        builder.AppendLiteral(Environment.NewLine);
+    }
+
+    private static void AppendMonthlyBotRow(ref DefaultInterpolatedStringHandler builder, string day, PullRequestAnalyzer.Metadata metadata)
+    {
+        builder.AppendLiteral("  <div class=\"month-pr-bot\"><a href=\"./");
+        builder.AppendLiteral(day);
+        builder.AppendLiteral(".html#");
+        builder.AppendLiteral(metadata.PullRequestNumber);
+        builder.AppendLiteral("\">");
+        builder.AppendLiteral(TextEncoder.Encode(metadata.TitleText));
+        builder.AppendLiteral("</a>");
+        if (metadata.Author.Length > 0)
+        {
+            builder.AppendLiteral("<span class=\"month-pr-botname\">@");
+            builder.AppendLiteral(TextEncoder.Encode(metadata.Author));
+            builder.AppendLiteral("</span>");
+        }
+        builder.AppendLiteral("</div>");
+        builder.AppendLiteral(Environment.NewLine);
+    }
+
+    private static string GenerateMonthlyFloatingTocHtml(string month, ReadOnlySpan<(string Day, PullRequestAnalyzer.AnalysisResults Result)> days)
+    {
+        if (days.IsEmpty)
+        {
+            return string.Empty;
+        }
+
+        var builder = new DefaultInterpolatedStringHandler(0, 0);
+        builder.AppendLiteral("<div id=\"floating-toc\" class=\"floating-toc\">");
+        builder.AppendLiteral(Environment.NewLine);
+        builder.AppendLiteral("  <div class=\"floating-toc-header\">目次</div>");
+        builder.AppendLiteral(Environment.NewLine);
+        builder.AppendLiteral("  <nav class=\"floating-toc-nav\">");
+        builder.AppendLiteral(Environment.NewLine);
+        builder.AppendLiteral("    <ol>");
+        builder.AppendLiteral(Environment.NewLine);
+
+        for (var i = days.Length - 1; i >= 0; i--)
+        {
+            var (day, result) = days[i];
+            builder.AppendLiteral("      <li><a href=\"#day-");
+            builder.AppendLiteral(day);
+            builder.AppendLiteral("\">");
+            builder.AppendLiteral(month);
+            builder.AppendLiteral("月");
+            builder.AppendLiteral(day);
+            builder.AppendLiteral("日 (");
+            builder.AppendFormatted(result.PullRequestTotalCount);
+            builder.AppendLiteral(")</a></li>");
+            builder.AppendLiteral(Environment.NewLine);
+        }
+
+        builder.AppendLiteral("    </ol>");
+        builder.AppendLiteral(Environment.NewLine);
+        builder.AppendLiteral("  </nav>");
+        builder.AppendLiteral(Environment.NewLine);
+        builder.AppendLiteral("</div>");
+        builder.AppendLiteral(Environment.NewLine);
+        builder.AppendLiteral("<div id=\"toc-backdrop\" class=\"toc-backdrop\"></div>");
+        builder.AppendLiteral(Environment.NewLine);
+
+        return builder.ToStringAndClear();
+    }
+
+    // Expands one clamped overview in place. Delegated so 500+ cards cost a single listener.
+    private static string GenerateOverviewClampScript()
+    {
+        return """
+<script>
+document.addEventListener('click', function(e) {
+  var btn = e.target.closest('.month-pr-more');
+  if (!btn) return;
+  var body = btn.parentElement.querySelector('.month-pr-overview');
+  if (!body) return;
+  btn.textContent = body.classList.toggle('clamped') ? '続きを読む' : '閉じる';
+});
+</script>
+""";
     }
 
     public static string SanitizeLabelForPath(string label)
@@ -1096,19 +1604,68 @@ document.addEventListener('DOMContentLoaded', function() {
     {
         HtmlPageKind.Index => IndexCss,
         HtmlPageKind.Daily => DailyCss,
+        HtmlPageKind.Monthly => MonthlyCss,
         HtmlPageKind.LabelIndex => LabelIndexCss,
         HtmlPageKind.LabelPage => LabelPageCss,
         _ => BaseCss,
     };
 
     // outputs/index.html: month <details> list, latest digest stats, scroll-to-top button.
-    private const string IndexCss = BaseCss + DetailsCss + DayListCss + StatsCss + ScrollToTopCss;
+    private const string IndexCss = BaseCss + DetailsCss + DayListCss + MonthLinkCss + StatsCss + ScrollToTopCss;
 
     // outputs/yyyy/MM/dd.html: markdown body (code/table/strong), view tabs, label groups, floating TOC.
     private const string DailyCss =
-        BaseCss + DetailsCss + MarkdownContentCss + TableCss + TableOfContentsCss +
+        BaseCss + DayBreadcrumbCss + DetailsCss + MarkdownContentCss + TableCss + TableOfContentsCss +
         ViewTabsCss + LabelGroupCss + LabelPrCountCss + LabelPrListCss + LabelPieCss +
         FloatingTocCss + ScrollToTopCss;
+
+    // "ホーム › yyyy年MM月 › dd日" at the top of a daily page. The links look like a small line of
+    // text but get a 44px-tall hit area so they are easy to tap on a phone.
+    private const string DayBreadcrumbCss = """
+    .day-breadcrumb {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      column-gap: 4px;
+      margin: -12px 0 12px 0;
+      font-size: 14px;
+      color: #6b7280;
+    }
+
+    .day-breadcrumb a {
+      display: inline-flex;
+      align-items: center;
+      min-height: 44px;
+      padding: 0 6px;
+      margin: 0 -6px;
+      text-decoration: none;
+    }
+
+    .day-breadcrumb a:hover {
+      text-decoration: underline;
+    }
+
+    .day-breadcrumb-sep {
+      color: #9ca3af;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      .day-breadcrumb {
+        color: #9ca3af;
+      }
+
+      .day-breadcrumb-sep {
+        color: #6b7280;
+      }
+    }
+
+
+""";
+
+    // outputs/yyyy/MM/index.html: month stats, daily bars, label pie, and every PR with its overview.
+    private const string MonthlyCss =
+        BaseCss + MarkdownContentCss + StatsCss + LabelPrCountCss + LabelPieCss +
+        MonthlyPrCss + FloatingTocCss + ScrollToTopCss;
 
     // outputs/labels/index.html: sortable label table only (no <details>, no scroll-to-top button).
     private const string LabelIndexCss = BaseCss + TableCss + LabelPrCountCss + LabelIndexTableCss + LabelPieCss;
@@ -1453,6 +2010,37 @@ document.addEventListener('DOMContentLoaded', function() {
         display: grid;
         grid-auto-flow: column;
         grid-template-rows: repeat(16, auto);
+      }
+    }
+
+
+""";
+
+    private const string MonthLinkCss = """
+    .month-link {
+      margin-left: 12px;
+      padding: 1px 8px;
+      border: 1px solid #c7d2e5;
+      border-radius: 2em;
+      color: #1f4e8c;
+      font-size: 13px;
+      font-weight: 500;
+      text-decoration: none;
+      white-space: nowrap;
+    }
+
+    .month-link:hover {
+      background: #e8f0fb;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      .month-link {
+        border-color: #33415c;
+        color: #9dc2ff;
+      }
+
+      .month-link:hover {
+        background: #1b2740;
       }
     }
 
@@ -2122,6 +2710,285 @@ document.addEventListener('DOMContentLoaded', function() {
 
       .label-pie-no {
         forced-color-adjust: none;
+      }
+    }
+
+
+""";
+
+    // Monthly page: the daily bar chart, the per-PR cards and the compact bot rows.
+    private const string MonthlyPrCss = """
+    .month-bar-figure {
+      margin: 16px 0 24px 0;
+    }
+
+    .month-bar-body {
+      width: 100%;
+      overflow-x: auto;
+    }
+
+    .month-bar {
+      max-width: 100%;
+      height: auto;
+    }
+
+    .month-bar rect {
+      fill: #3066a5;
+    }
+
+    .month-bar a:hover rect {
+      fill: #1f4e8c;
+    }
+
+    .month-bar-value,
+    .month-bar-day {
+      font-size: 11px;
+      text-anchor: middle;
+      fill: #6b7280;
+    }
+
+    .month-bar-figure figcaption {
+      margin-top: 8px;
+      font-size: 12px;
+      color: #6b7280;
+    }
+
+    .month-day-head {
+      margin-top: 40px;
+      scroll-margin-top: 90px;
+    }
+
+    .month-day-note {
+      margin-left: 6px;
+      font-size: 12px;
+      font-weight: 400;
+      color: #9ca3af;
+    }
+
+    .month-day-link {
+      margin-left: 10px;
+      font-size: 13px;
+      font-weight: 500;
+      text-decoration: none;
+      white-space: nowrap;
+    }
+
+    .month-pr {
+      border-left: 3px solid #d7e0ee;
+      padding: 2px 0 2px 14px;
+      margin: 18px 0;
+    }
+
+    /* PR titles carry long unbroken identifiers (test names, type names), and the card headings
+       are <h4>, which the base stylesheet does not wrap. Without this the page scrolls sideways. */
+    .month-pr-title {
+      margin: 0 0 4px 0;
+      font-size: 16px;
+      line-height: 1.5;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+
+    .month-pr-title a {
+      text-decoration: none;
+    }
+
+    .month-pr-title a:hover {
+      text-decoration: underline;
+    }
+
+    .month-pr-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      align-items: center;
+      margin: 0 0 6px 0;
+      font-size: 12px;
+      color: #6b7280;
+    }
+
+    /* Flex items do not shrink below their content by default: a long label badge would push the
+       row past the viewport. */
+    .month-pr-meta > * {
+      min-width: 0;
+      max-width: 100%;
+      overflow-wrap: anywhere;
+    }
+
+    .month-pr-sep {
+      color: #9ca3af;
+    }
+
+    /* The overview is Markdig output: a lead <p>, optionally followed by <pre>, <ul> or more <p>.
+       The base stylesheet spaces those for a full article, so they are tightened for a card. */
+    .month-pr-overview {
+      margin: 0;
+      font-size: 14px;
+      line-height: 1.8;
+    }
+
+    .month-pr-overview > p {
+      margin: 0 0 8px 0;
+    }
+
+    .month-pr-overview > :last-child {
+      margin-bottom: 0;
+    }
+
+    .month-pr-overview pre {
+      max-width: 100%;
+      margin: 8px 0;
+    }
+
+    .month-pr-overview pre code {
+      padding: 10px 12px;
+      font-size: 12.5px;
+      line-height: 1.6;
+    }
+
+    .month-pr-overview ul,
+    .month-pr-overview ol {
+      margin: 4px 0 8px 0;
+      padding-left: 22px;
+    }
+
+    .month-pr-overview li {
+      margin: 2px 0;
+      font-size: 14px;
+      line-height: 1.7;
+    }
+
+    /* Clamped: only the lead paragraph shows, cut to a few lines; every following block is hidden
+       until 続きを読む. Clamping across block children is unreliable in Safari, so the clamp sits on
+       the paragraph itself. -webkit-line-clamp counts lines, so each breakpoint uses the line count
+       that shows about 200 characters at that content width (14px text, full-width characters). */
+    .month-pr-overview.clamped > :not(:first-child) {
+      display: none;
+    }
+
+    .month-pr-overview.clamped > p:first-child {
+      display: -webkit-box;
+      -webkit-box-orient: vertical;
+      -webkit-line-clamp: 3;
+      line-clamp: 3;
+      overflow: hidden;
+      margin-bottom: 0;
+    }
+
+    .month-pr-more {
+      margin-top: 4px;
+      padding: 0;
+      border: none;
+      background: none;
+      color: #1f4e8c;
+      font-family: inherit;
+      font-size: 12px;
+      cursor: pointer;
+    }
+
+    .month-pr-more:hover {
+      text-decoration: underline;
+    }
+
+    .month-bot-group {
+      margin: 20px 0 0 0;
+      padding: 10px 14px;
+      background: #f6f8fa;
+      border-radius: 6px;
+    }
+
+    .month-bot-head {
+      margin: 0 0 6px 0;
+      font-size: 13px;
+      font-weight: 600;
+      color: #6b7280;
+    }
+
+    .month-pr-bot {
+      margin: 2px 0;
+      font-size: 13px;
+      line-height: 1.7;
+      color: #6b7280;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+
+    .month-pr-bot a {
+      text-decoration: none;
+    }
+
+    .month-pr-bot a:hover {
+      text-decoration: underline;
+    }
+
+    .month-pr-botname {
+      margin-left: 8px;
+      font-size: 11px;
+      color: #9ca3af;
+    }
+
+    @media (max-width: 1140px) {
+      .month-pr-overview.clamped > p:first-child {
+        -webkit-line-clamp: 4;
+        line-clamp: 4;
+      }
+    }
+
+    @media (max-width: 768px) {
+      .month-pr-overview.clamped > p:first-child {
+        -webkit-line-clamp: 6;
+        line-clamp: 6;
+      }
+
+      .month-day-link {
+        display: block;
+        margin-left: 0;
+      }
+    }
+
+    @media (max-width: 480px) {
+      .month-pr-overview.clamped > p:first-child {
+        -webkit-line-clamp: 9;
+        line-clamp: 9;
+      }
+    }
+
+    @media (prefers-color-scheme: dark) {
+      .month-bar rect {
+        fill: #4a86d6;
+      }
+
+      .month-bar a:hover rect {
+        fill: #7fb0ec;
+      }
+
+      .month-bar-value,
+      .month-bar-day,
+      .month-bar-figure figcaption {
+        fill: #9ca3af;
+        color: #9ca3af;
+      }
+
+      .month-pr {
+        border-left-color: #2b3a52;
+      }
+
+      .month-pr-meta,
+      .month-pr-bot,
+      .month-bot-head {
+        color: #9ca3af;
+      }
+
+      .month-pr-botname {
+        color: #6b7280;
+      }
+
+      .month-pr-more {
+        color: #9dc2ff;
+      }
+
+      .month-bot-group {
+        background: #161d2b;
       }
     }
 

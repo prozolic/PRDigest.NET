@@ -1,20 +1,16 @@
-﻿using Markdig;
-using System.Collections.Frozen;
-using System.Globalization;
+﻿using System.Collections.Frozen;
 using System.Runtime.CompilerServices;
 
 namespace PRDigest.NET;
 
 internal static class RssFeedGenerator
 {
-    public static string Generate(ReadOnlySpan<(string target, string markdownContent)> items)
+    public static string Generate(ReadOnlySpan<ArchiveAnalysis> items)
     {
         var itemBuilder = new DefaultInterpolatedStringHandler(0, 0);
-        foreach(var (target, markdownContent) in items)
+        foreach (var item in items)
         {
-            var document = Markdown.Parse(markdownContent, MarkdownOptions.Pipeline);
-            var analyzerResult = PullRequestAnalyzer.Analyze(document);
-            AppendItems(ref itemBuilder, target, analyzerResult);
+            AppendItems(ref itemBuilder, $"{item.Year}/{item.Month}/{item.Day}", item.Result);
         }
         var itemsText = itemBuilder.ToStringAndClear();
 

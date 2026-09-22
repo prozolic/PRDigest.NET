@@ -1,7 +1,6 @@
 ﻿using Anthropic;
 using Anthropic.Exceptions;
 using Anthropic.Models.Messages;
-using Markdig;
 using Octokit;
 using PRDigest.NET;
 using System.Runtime.InteropServices;
@@ -13,20 +12,26 @@ var startTime = TimeProvider.System.GetTimestamp();
 
 var archivesDir = args[0];
 var outputsDir = args[1];
+var parallelOptions = new ParallelOptions { MaxDegreeOfParallelism = Math.Min(4, Environment.ProcessorCount) };
+
 if (args.Length == 3 && args[2] == "-g")
 {
     // generate current day's PR markdown and HTML
     await SummarizeCurrentPullRequestAndCreate(archivesDir, outputsDir);
 }
 
-// convert all markdown files to HTML
-await CreateHtml(archivesDir, outputsDir);
+// Convert all markdown files to HTML. Every archive is parsed and analyzed exactly once in this
+// pass, and everything below (RSS, label pages, monthly pages) works from the returned analyses.
+var analyzedArchives = await CreateHtml(archivesDir, outputsDir);
 
-// (Re)create RSS feed from archived markdown files
-await CreateRss(archivesDir, outputsDir);
+// (Re)create RSS feed from the latest analyzed archives
+await CreateRss(outputsDir, analyzedArchives);
 
 // (Re)create the label index page and per-label PR list pages
-await CreateLabelPageHtml(archivesDir, outputsDir);
+await CreateLabelPageHtml(outputsDir, analyzedArchives);
+
+// (Re)create the monthly digest page for every month
+await CreateMonthlyPageHtml(outputsDir, analyzedArchives);
 
 // end
 var endTime = TimeProvider.System.GetTimestamp();
@@ -72,7 +77,7 @@ async ValueTask SummarizeCurrentPullRequestAndCreate(string archivesDir, string 
     if (string.IsNullOrEmpty(markdown)) return;
 
     // Save markdown and HTML files.
-    var html = HtmlGenerator.GenerateHtmlFromMarkdown($"{year}年{month}月{day}日", markdown);
+    var html = HtmlGenerator.GenerateHtmlFromMarkdown(year, month, day, markdown);
     var markdownTask = File.WriteAllTextAsync(Path.Combine(archivesDir, year, month, $"{day}.md"), markdown);
     var htmlTask = File.WriteAllTextAsync(Path.Combine(outputsDir, year, month, $"{day}.html"), html);
     await Task.WhenAll(markdownTask, htmlTask);
@@ -261,38 +266,18 @@ async ValueTask<string> SummarizePullRequestAsync(PullRequestInfo[] pullRequestI
     return $"{tableOfContentsBuilder}{separator}{markdownlBuilder}";
 }
 
-async ValueTask CreateRss(string archivesDir, string outputsDir)
+// analyzed is newest first, so the feed is simply its first MaxDays entries.
+async ValueTask CreateRss(string outputsDir, ArchiveAnalysis[] analyzed)
 {
     const int MaxDays = 3;
-    var comparer = StringComparerOptions.DefaultComparer;
 
-    var items = new List<(string target, string markdownContent)>(MaxDays);
-    foreach (var yearDir in Directory.EnumerateDirectories(archivesDir).OrderDescending(comparer))
-    {
-        var year = Path.GetFileName(yearDir);
+    if (analyzed.Length == 0) return;
 
-        foreach (var monthDir in Directory.EnumerateDirectories(yearDir).OrderDescending(comparer))
-        {
-            var month = Path.GetFileName(monthDir);
-
-            foreach (var mdFilePath in Directory.EnumerateFiles(monthDir, "*.md").OrderDescending(comparer))
-            {
-                if (items.Count >= MaxDays) goto END;
-                var day = Path.GetFileNameWithoutExtension(mdFilePath);
-                var markdown = await File.ReadAllTextAsync(mdFilePath);
-                items.Add(($"{year}/{month}/{day}", markdown));
-            }
-        }
-    }
-
-    if (items.Count == 0) return;
-
-END:
-    var rssContent = RssFeedGenerator.Generate(CollectionsMarshal.AsSpan(items));
+    var rssContent = RssFeedGenerator.Generate(analyzed.AsSpan(0, Math.Min(MaxDays, analyzed.Length)));
     await File.WriteAllTextAsync(Path.Combine(outputsDir, $"feed.xml"), rssContent);
 }
 
-async ValueTask CreateHtml(string archivesDir, string outputsDir)
+async ValueTask<ArchiveAnalysis[]> CreateHtml(string archivesDir, string outputsDir)
 {
     // set up archives directory
     if (!Directory.Exists(archivesDir))
@@ -306,73 +291,85 @@ async ValueTask CreateHtml(string archivesDir, string outputsDir)
         Directory.CreateDirectory(outputsDir);
     }
 
-    foreach (var yearDirs in Directory.EnumerateDirectories(archivesDir))
-    {
-        var year = Path.GetFileName(yearDirs);
-        if (!Directory.Exists(Path.Combine(outputsDir, year)))
-        {
-            Directory.CreateDirectory(Path.Combine(outputsDir, year));
-        }
-
-        foreach (var monthDirs in Directory.EnumerateDirectories(yearDirs))
-        {
-            var month = Path.GetFileName(monthDirs);
-            if (!Directory.Exists(Path.Combine(outputsDir, year, month)))
-            {
-                Directory.CreateDirectory(Path.Combine(outputsDir, year, month));
-            }
-
-            await Parallel.ForEachAsync(Directory.EnumerateFiles(monthDirs, "*.md"), async (dayFiles, _) =>
-            {
-                var day = Path.GetFileNameWithoutExtension(dayFiles);
-                var markdown = await File.ReadAllTextAsync(dayFiles);
-
-                // ./yyyy/mm/dd.html
-                var html = HtmlGenerator.GenerateHtmlFromMarkdown($"{year}年{month}月{day}日", markdown);
-                await File.WriteAllTextAsync(Path.Combine(outputsDir, year, month, $"{day}.html"), html);
-            });
-        }
-    }
-
-    // set up index.html
-    await File.WriteAllTextAsync(Path.Combine(outputsDir, "index.html"), HtmlGenerator.GenerateIndex(archivesDir, outputsDir));
-}
-
-async ValueTask CreateLabelPageHtml(string archivesDir, string outputsDir)
-{
-    // Collect, across ALL archived markdown files, every PR grouped by label.
-    // Each entry remembers the archive's date path ("yyyy/MM/dd") so a per-label page
-    // can link to the PR's anchor on the corresponding daily HTML page.
     var comparer = StringComparerOptions.DefaultComparer;
-    var labelTable = new Dictionary<string, LabelPullRequestInfo>(256);
 
-    // Newest archive first: this is the order the entries end up in on every label page.
-    var archives = new List<(string Target, string Path)>(512);
+    var archives = new List<(string Year, string Month, string Day, string Path)>(512);
     foreach (var yearDir in Directory.EnumerateDirectories(archivesDir).OrderDescending(comparer))
     {
         var year = Path.GetFileName(yearDir);
         foreach (var monthDir in Directory.EnumerateDirectories(yearDir).OrderDescending(comparer))
         {
             var month = Path.GetFileName(monthDir);
+
+            // Created up front: the parallel loop below only writes files.
+            Directory.CreateDirectory(Path.Combine(outputsDir, year, month));
+
             foreach (var mdFilePath in Directory.EnumerateFiles(monthDir, "*.md").OrderDescending(comparer))
             {
                 var day = Path.GetFileNameWithoutExtension(mdFilePath);
-                archives.Add(($"{year}/{month}/{day}", mdFilePath));
+                archives.Add((year, month, day, mdFilePath));
             }
         }
     }
 
-    var analyzed = new PullRequestAnalyzer.AnalysisResults[archives.Count];
-    await Parallel.ForEachAsync(Enumerable.Range(0, archives.Count), async (i, cancellationToken) =>
+    var analyzed = new ArchiveAnalysis[archives.Count];
+    await Parallel.ForEachAsync(Enumerable.Range(0, archives.Count), parallelOptions, async (i, cancellationToken) =>
     {
-        var markdown = await File.ReadAllTextAsync(archives[i].Path, cancellationToken);
-        analyzed[i] = PullRequestAnalyzer.Analyze(Markdown.Parse(markdown, MarkdownOptions.Pipeline));
+        var (year, month, day, path) = archives[i];
+        var markdown = await File.ReadAllTextAsync(path, cancellationToken);
+
+        // ./yyyy/mm/dd.html
+        var html = HtmlGenerator.GenerateHtmlFromMarkdown(year, month, day, markdown, out var analysis);
+        analyzed[i] = new ArchiveAnalysis(year, month, day, analysis);
+        await File.WriteAllTextAsync(Path.Combine(outputsDir, year, month, $"{day}.html"), html, cancellationToken);
     });
 
-    for (var i = 0; i < archives.Count; i++)
+    // set up index.html
+    await File.WriteAllTextAsync(Path.Combine(outputsDir, "index.html"), HtmlGenerator.GenerateIndex(outputsDir, analyzed));
+
+    return analyzed;
+}
+
+async ValueTask CreateMonthlyPageHtml(string outputsDir, ArchiveAnalysis[] analyzed)
+{
+    const int MaxDays = 31;
+
+    var initialCapacity = Math.Max(4, (analyzed.Length / 30) + 2);
+    var months = new Dictionary<(string Year, string Month), List<(string Day, PullRequestAnalyzer.AnalysisResults Result)>>(initialCapacity);
+    foreach (var archive in analyzed)
     {
-        var target = archives[i].Target;
-        var analyzerResult = analyzed[i];
+        ref var days = ref CollectionsMarshal.GetValueRefOrAddDefault(months, (archive.Year, archive.Month), out var exists);
+        if (!exists)
+        {
+            days = new List<(string, PullRequestAnalyzer.AnalysisResults)>(MaxDays);
+        }
+        days!.Add((archive.Day, archive.Result));
+    }
+
+    foreach (var ((year, month), days) in months)
+    {
+        // The page renders the days ascending (the bar chart) and descending (the PR list).
+        days.Sort(static (x, y) => StringComparerOptions.DefaultComparer.Compare(x.Day, y.Day));
+
+        var monthDir = Path.Combine(outputsDir, year, month);
+        if (!Directory.Exists(monthDir))
+        {
+            Directory.CreateDirectory(monthDir);
+        }
+
+        var html = HtmlGenerator.GenerateMonthlyPageHtml(year, month, CollectionsMarshal.AsSpan(days));
+        await File.WriteAllTextAsync(Path.Combine(monthDir, "index.html"), html);
+    }
+}
+
+async ValueTask CreateLabelPageHtml(string outputsDir, ArchiveAnalysis[] analyzed)
+{
+    var labelTable = new Dictionary<string, LabelPullRequestInfo>(256);
+
+    for (var i = 0; i < analyzed.Length; i++)
+    {
+        var target = $"{analyzed[i].Year}/{analyzed[i].Month}/{analyzed[i].Day}";
+        var analyzerResult = analyzed[i].Result;
 
         foreach (var (label, metadata) in analyzerResult.LabelMap)
         {
@@ -406,7 +403,7 @@ async ValueTask CreateLabelPageHtml(string archivesDir, string outputsDir)
     await File.WriteAllTextAsync(Path.Combine(labelsDir, "index.html"), HtmlGenerator.GenerateLabelIndexHtml(labelTable));
 
     // outputs/labels/{sanitized}/index.html
-    await Parallel.ForEachAsync(labelTable, async (key, _) =>
+    await Parallel.ForEachAsync(labelTable, parallelOptions, async (key, _) =>
     {
         var label = key.Key;
         var info = key.Value;
@@ -431,6 +428,8 @@ internal sealed class PullRequestInfo
 
     public required IReadOnlyList<PullRequestReview> Reviews { get; init; }
 }
+
+internal readonly record struct ArchiveAnalysis(string Year, string Month, string Day, PullRequestAnalyzer.AnalysisResults Result);
 
 internal sealed class LabelPullRequestInfo
 {
