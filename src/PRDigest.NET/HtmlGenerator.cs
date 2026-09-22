@@ -1052,7 +1052,7 @@ document.addEventListener('DOMContentLoaded', function() {
             builder.AppendLiteral(" PRs</title></rect><text class=\"month-bar-value\" x=\"");
             builder.AppendFormatted(centerX, "0.##");
             builder.AppendLiteral("\" y=\"");
-            builder.AppendFormatted(ChartHeight - barHeight - 5d, "0.##");
+            builder.AppendFormatted(Math.Max(11d, ChartHeight - barHeight - 5d), "0.##");
             builder.AppendLiteral("\">");
             builder.AppendFormatted(count);
             builder.AppendLiteral("</text><text class=\"month-bar-day\" x=\"");

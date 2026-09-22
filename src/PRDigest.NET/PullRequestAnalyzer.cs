@@ -70,8 +70,10 @@ internal static class PullRequestAnalyzer
     private static bool IsLineBreakTag(ReadOnlySpan<char> tag)
     {
         tag = tag.Trim();
-        if (!tag.StartsWith("<br", StringComparison.OrdinalIgnoreCase) || tag.Length < 4) return false;
-        return tag[3] is '>' or '/' or ' ';
+        // <br>, <br/>, <br /> are all valid line break tags in HTML.
+        return tag.Equals("<br>", StringComparison.OrdinalIgnoreCase)
+            || tag.Equals("<br/>", StringComparison.OrdinalIgnoreCase)
+            || tag.Equals("<br />", StringComparison.OrdinalIgnoreCase);
     }
 
     public static AnalysisResults Analyze(MarkdownDocument document)
