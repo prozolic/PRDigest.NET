@@ -1,10 +1,12 @@
-﻿using Markdig.Syntax;
+﻿using Markdig.Renderers;
+using Markdig.Syntax;
 using Markdig.Syntax.Inlines;
 using System.Collections.Frozen;
 using System.Collections.Immutable;
 using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using System.Text;
 
 namespace PRDigest.NET;
 
@@ -23,6 +25,55 @@ internal static class PullRequestAnalyzer
         Unknown
     }
 
+    public static void EscapeStrayHtml(MarkdownDocument document)
+    {
+        List<HtmlInline>? strays = null;
+        var inBody = false;
+
+        foreach (var block in document)
+        {
+            if (block is HeadingBlock heading)
+            {
+                inBody = heading.Level == 4;
+                continue;
+            }
+            if (block is ThematicBreakBlock)
+            {
+                inBody = false;
+                continue;
+            }
+            if (!inBody) continue;
+
+            // Descendants<T>() yields nothing when its root is a LeafBlock, so a paragraph is walked
+            // from its inline container instead.
+            var inlines = block is LeafBlock leaf ? leaf.Inline?.Descendants<HtmlInline>() : block.Descendants<HtmlInline>();
+            if (inlines is null) continue;
+
+            foreach (var html in inlines)
+            {
+                if (!IsLineBreakTag(html.Tag))
+                {
+                    (strays ??= []).Add(html);
+                }
+            }
+        }
+
+        if (strays is null) return;
+
+        // Replaced after the walk: ReplaceBy() edits the tree the enumerators above are reading.
+        foreach (var html in strays)
+        {
+            html.ReplaceBy(new LiteralInline(html.Tag));
+        }
+    }
+
+    private static bool IsLineBreakTag(ReadOnlySpan<char> tag)
+    {
+        tag = tag.Trim();
+        if (!tag.StartsWith("<br", StringComparison.OrdinalIgnoreCase) || tag.Length < 4) return false;
+        return tag[3] is '>' or '/' or ' ';
+    }
+
     public static AnalysisResults Analyze(MarkdownDocument document)
     {
         var currentPosition = PullRequestPosition.None;
@@ -35,11 +86,32 @@ internal static class PullRequestAnalyzer
         List<Metadata> botPullRequestHeadings = [];
         List<Metadata> communityPrHeadings = [];
         List<Metadata> aiAgentPullRequestHeadings = [];
+        List<Metadata> allPullRequestHeadings = [];
         Metadata currentMetadata = default;
         Dictionary<string, Summary> pullRequestInfoTable = [];
 
+        // Every block of the current PR's 概要 section, and the renderer that turns them into HTML.
+        // The renderer is created on first use and shared by all PRs of the document.
+        List<Block>? overviewBlocks = null;
+        StringBuilder? overviewHtmlBuffer = null;
+        HtmlRenderer? overviewRenderer = null;
+
         foreach (var block in document)
         {
+            // The 概要 section runs until the next heading or the PR separator: a paragraph is often
+            // followed by a code block or a list that belongs to the same overview.
+            if (currentPosition == PullRequestPosition.Overview)
+            {
+                if (block is not HeadingBlock and not ThematicBreakBlock)
+                {
+                    (overviewBlocks ??= new List<Block>(4)).Add(block);
+                    continue;
+                }
+
+                FlushOverview();
+                currentPosition = PullRequestPosition.None;
+            }
+
             if (block is HeadingBlock headingBlock)
             {
                 if (tableOfContents && currentPosition != PullRequestPosition.Metadata)
@@ -123,7 +195,21 @@ internal static class PullRequestAnalyzer
                     });
 
                     var mergedAt = ParseDate(metadataList[2]);
-                    currentMetadata = GetMetadata(nextPullRequestNumber, labels, mergedAt);
+                    var userLiteralInlines = metadataList[0]?.Descendants<LiteralInline>();
+                    var userName = userLiteralInlines is not null && userLiteralInlines.Any()
+                        ? string.Concat(userLiteralInlines.Select(literal => literal.Content.ToString())).Trim()
+                        : "";
+
+                    var authorUrl = metadataList[0]?.Descendants<LinkInline>().FirstOrDefault()?.Url ?? "";
+                    var authorLogin = userName;
+                    var loginStart = authorLogin.IndexOf(": ", StringComparison.Ordinal);
+                    if (loginStart >= 0)
+                    {
+                        authorLogin = authorLogin[(loginStart + 2)..];
+                    }
+
+                    currentMetadata = GetMetadata(nextPullRequestNumber, labels, mergedAt, authorLogin.TrimStart('@'), authorUrl);
+                    allPullRequestHeadings.Add(currentMetadata);
 
                     foreach (var label in labels ?? [])
                     {
@@ -132,24 +218,18 @@ internal static class PullRequestAnalyzer
                         prList.Add(currentMetadata);
                     }
 
-                    var userLiteralInlines = metadataList[0]?.Descendants<LiteralInline>();
-                    if (userLiteralInlines is not null && userLiteralInlines.Any())
+                    // check ..[bot].. to count bot PRs, @Copilot to count AI agent PRs
+                    if (userName.Length == 0)
                     {
-                        var userName = string.Concat(userLiteralInlines.Select(literal => literal.Content.ToString())).Trim();
-
-                        // check ..[bot].. to count bot PRs, @Copilot to count AI agent PRs
-                        if (userName.EndsWith("[bot]", StringComparison.OrdinalIgnoreCase))
-                        {
-                            botPullRequestHeadings.Add(currentMetadata);
-                        }
-                        else if (userName.IndexOf("@Copilot", StringComparison.OrdinalIgnoreCase) > -1)
-                        {
-                            aiAgentPullRequestHeadings.Add(currentMetadata);
-                        }
-                        else
-                        {
-                            communityPrHeadings.Add(currentMetadata);
-                        }
+                        communityPrHeadings.Add(currentMetadata);
+                    }
+                    else if (userName.EndsWith("[bot]", StringComparison.OrdinalIgnoreCase))
+                    {
+                        botPullRequestHeadings.Add(currentMetadata);
+                    }
+                    else if (userName.IndexOf("@Copilot", StringComparison.OrdinalIgnoreCase) > -1)
+                    {
+                        aiAgentPullRequestHeadings.Add(currentMetadata);
                     }
                     else
                     {
@@ -173,15 +253,59 @@ internal static class PullRequestAnalyzer
                     tableOfContents = true;
                 }
             }
-            else if (block is ParagraphBlock paragraphBlock)
+            else if (block is ParagraphBlock)
             {
-                if (currentPosition == PullRequestPosition.Overview)
-                {
-                    var overviewText = GetOverview(paragraphBlock.Inline);
-                    pullRequestInfoTable.TryAdd(currentMetadata.PullRequestNumber, new Summary(overviewText));
-                }
                 currentPosition = PullRequestPosition.None;
             }
+        }
+
+        // The last PR of a document may end without a separator.
+        if (currentPosition == PullRequestPosition.Overview)
+        {
+            FlushOverview();
+        }
+
+        void FlushOverview()
+        {
+            if (overviewBlocks is null || overviewBlocks.Count == 0) return;
+
+            if (currentMetadata.PullRequestNumber is not null)
+            {
+                // Plain text: the lead paragraph only. It is the RSS description and what the monthly
+                // page measures to decide whether the card needs clamping.
+                var overviewText = overviewBlocks[0] is ParagraphBlock { Inline: not null } lead
+                    ? GetOverviewText(lead.Inline)
+                    : "";
+
+                var overviewHtml = "";
+                if (!currentMetadata.IsBot)
+                {
+                    if (overviewRenderer is null)
+                    {
+                        overviewHtmlBuffer = new StringBuilder(1024);
+                        overviewRenderer = new HtmlRenderer(new StringWriter(overviewHtmlBuffer));
+                        MarkdownOptions.Pipeline.Setup(overviewRenderer);
+                    }
+
+                    foreach (var overviewBlock in overviewBlocks)
+                    {
+                        overviewRenderer.Render(overviewBlock);
+                    }
+                    overviewRenderer.Writer.Flush();
+
+                    var length = overviewHtmlBuffer!.Length;
+                    while (length > 0 && overviewHtmlBuffer[length - 1] == '\n')
+                    {
+                        length--;
+                    }
+                    overviewHtml = overviewHtmlBuffer.ToString(0, length);
+                    overviewHtmlBuffer.Clear();
+                }
+
+                pullRequestInfoTable.TryAdd(currentMetadata.PullRequestNumber, new Summary(overviewText, overviewHtml, overviewBlocks.Count > 1));
+            }
+
+            overviewBlocks.Clear();
         }
 
         return new AnalysisResults(
@@ -191,6 +315,7 @@ internal static class PullRequestAnalyzer
             botPullRequestHeadings,
             communityPrHeadings,
             aiAgentPullRequestHeadings,
+            allPullRequestHeadings,
             pullRequestInfoTable.ToFrozenDictionary());
     }
 
@@ -217,7 +342,7 @@ internal static class PullRequestAnalyzer
         throw new FormatException($"Invalid date format: could not parse date in '{text}'.");
     }
 
-    private static Metadata GetMetadata(HeadingBlock heading, IEnumerable<LiteralInline>? labels, DateTimeOffset mergedAt)
+    private static Metadata GetMetadata(HeadingBlock heading, IEnumerable<LiteralInline>? labels, DateTimeOffset mergedAt, string author, string authorUrl)
     {
         var pullRequestNumber = "";
         var titleText = "";
@@ -260,24 +385,30 @@ internal static class PullRequestAnalyzer
         var displayText = $"{pullRequestNumber} {titleText.Trim()}";
 
         return new Metadata(
-            pullRequestNumber.TrimStart('#'), 
-            displayText, 
-            labels?.Select(l => l.ToString()).ToImmutableArray() ?? ImmutableArray<string>.Empty, 
-            mergedAt);
+            pullRequestNumber.TrimStart('#'),
+            displayText,
+            labels?.Select(l => l.ToString()).ToImmutableArray() ?? ImmutableArray<string>.Empty,
+            mergedAt,
+            author,
+            authorUrl);
     }
 
-    private static string GetOverview(ContainerInline? inline)
+    private static string GetOverviewText(ContainerInline inline)
     {
-        if (inline is null) return "";
-
         var builder = new DefaultInterpolatedStringHandler(0, 0);
+        AppendInlineText(ref builder, inline);
+        return builder.ToStringAndClear();
+    }
+
+    private static void AppendInlineText(ref DefaultInterpolatedStringHandler builder, ContainerInline inline)
+    {
         var child = inline.FirstChild;
         while (child is not null)
         {
             switch (child)
             {
                 case LiteralInline literal:
-                    builder.AppendLiteral(literal.Content.ToString());
+                    builder.AppendFormatted(literal.Content.AsSpan());
                     break;
                 case CodeInline codeInline:
                     builder.AppendLiteral(codeInline.Content);
@@ -285,16 +416,12 @@ internal static class PullRequestAnalyzer
                 case LineBreakInline:
                     builder.AppendLiteral("\n");
                     break;
-                case LinkInline linkInline:
-                    builder.AppendLiteral(GetOverview(linkInline));
-                    break;
-                case EmphasisInline emphasisInline:
-                    builder.AppendLiteral(GetOverview(emphasisInline));
+                case ContainerInline container:
+                    AppendInlineText(ref builder, container);
                     break;
             }
             child = child.NextSibling;
         }
-        return builder.ToStringAndClear();
     }
 
     public sealed class AnalysisResults(
@@ -304,6 +431,7 @@ internal static class PullRequestAnalyzer
         List<Metadata> botPullRequestMetadata,
         List<Metadata> communityPullRequestMetadata,
         List<Metadata> agentPullRequestMetadata,
+        List<Metadata> allPullRequestMetadata,
         FrozenDictionary<string, Summary> summaryMap)
     {
         public int PullRequestTotalCount => pullRequestTotalCount;
@@ -317,19 +445,26 @@ internal static class PullRequestAnalyzer
         public ReadOnlySpan<Metadata> CommunityPullRequestMetadataSpan => CollectionsMarshal.AsSpan(communityPullRequestMetadata);
         public ReadOnlySpan<Metadata> BotPullRequestMetadataSpan => CollectionsMarshal.AsSpan(botPullRequestMetadata);
         public ReadOnlySpan<Metadata> AgentPullRequestMetadataSpan => CollectionsMarshal.AsSpan(agentPullRequestMetadata);
+        public ReadOnlySpan<Metadata> AllPullRequestMetadataSpan => CollectionsMarshal.AsSpan(allPullRequestMetadata);
         public FrozenDictionary<string, Summary> SummaryMap => summaryMap;
     }
 
-    public readonly struct Summary(string overview)
+    public readonly struct Summary(string overview, string overviewHtml, bool hasMoreBlocks)
     {
         public string Overview => overview;
+
+        public string OverviewHtml => overviewHtml;
+
+        public bool HasMoreBlocks => hasMoreBlocks;
     }
 
     public readonly struct Metadata(
         string pullRequestNumber,
         string titleText,
         ImmutableArray<string> labels,
-        DateTimeOffset mergedAt)
+        DateTimeOffset mergedAt,
+        string author,
+        string authorUrl)
     {
         public string PullRequestNumber => pullRequestNumber;
 
@@ -338,5 +473,11 @@ internal static class PullRequestAnalyzer
         public ImmutableArray<string> Labels => labels;
 
         public DateTimeOffset MergedAt => mergedAt;
+
+        public string Author => author;
+
+        public string AuthorUrl => authorUrl;
+
+        public bool IsBot => author.EndsWith("[bot]", StringComparison.OrdinalIgnoreCase);
     }
 }
