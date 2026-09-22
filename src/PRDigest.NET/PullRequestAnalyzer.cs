@@ -27,29 +27,76 @@ internal static class PullRequestAnalyzer
 
     public static void EscapeStrayHtml(MarkdownDocument document)
     {
-        List<HtmlInline>? strays = null;
-        var inBody = false;
+        List<HtmlInline>? strayInlines = null;
+        List<HtmlBlock>? strayBlocks = null;
+        Block? previous = null;
 
         foreach (var block in document)
         {
-            if (block is HeadingBlock heading)
+            var isMetadataList = block is ListBlock && previous is HeadingBlock { Level: 3 } && IsMetadataList(block);
+            previous = block;
+            if (isMetadataList) continue;
+
+            if (block is HtmlBlock htmlBlock)
             {
-                inBody = heading.Level == 4;
+                (strayBlocks ??= []).Add(htmlBlock);
                 continue;
             }
-            if (block is ThematicBreakBlock)
+
+            // Descendants<T>() yields nothing when its root is a LeafBlock, so a paragraph or heading
+            // is walked from its inline container instead.
+            if (block is LeafBlock leaf)
             {
-                inBody = false;
+                CollectInlines(leaf.Inline, ref strayInlines);
                 continue;
             }
-            if (!inBody) continue;
 
-            // Descendants<T>() yields nothing when its root is a LeafBlock, so a paragraph is walked
-            // from its inline container instead.
-            var inlines = block is LeafBlock leaf ? leaf.Inline?.Descendants<HtmlInline>() : block.Descendants<HtmlInline>();
-            if (inlines is null) continue;
+            foreach (var descendant in block.Descendants())
+            {
+                switch (descendant)
+                {
+                    case HtmlBlock nested:
+                        (strayBlocks ??= []).Add(nested);
+                        break;
+                    case HtmlInline html when !IsLineBreakTag(html.Tag):
+                        (strayInlines ??= []).Add(html);
+                        break;
+                }
+            }
+        }
 
-            foreach (var html in inlines)
+        // Replaced after the walk: the replacements edit the tree the enumerators above are reading.
+        if (strayInlines is not null)
+        {
+            foreach (var html in strayInlines)
+            {
+                html.ReplaceBy(new LiteralInline(html.Tag));
+            }
+        }
+
+        if (strayBlocks is not null)
+        {
+            foreach (var htmlBlock in strayBlocks)
+            {
+                // Becomes a paragraph holding the raw lines as text, which the renderer escapes.
+                var paragraph = new ParagraphBlock { Inline = new ContainerInline() };
+                paragraph.Inline.AppendChild(new LiteralInline(htmlBlock.Lines.ToString()));
+
+                var parent = htmlBlock.Parent!;
+                var index = parent.IndexOf(htmlBlock);
+                parent.RemoveAt(index);
+                parent.Insert(index, paragraph);
+            }
+        }
+
+        static void CollectInlines(ContainerInline? inline, ref List<HtmlInline>? strays)
+        {
+            if (inline is null)
+            {
+                return;
+            }
+
+            foreach (var html in inline.Descendants<HtmlInline>())
             {
                 if (!IsLineBreakTag(html.Tag))
                 {
@@ -57,14 +104,20 @@ internal static class PullRequestAnalyzer
                 }
             }
         }
+    }
 
-        if (strays is null) return;
-
-        // Replaced after the walk: ReplaceBy() edits the tree the enumerators above are reading.
-        foreach (var html in strays)
+    private static bool IsMetadataList(Block block)
+    {
+        // "- 作成者: …" opens the metadata list of every PR; no summary text starts a list item that way.
+        if (block is not ListBlock { Count: > 0 } list || list[0] is not ListItemBlock { Count: > 0 } item)
         {
-            html.ReplaceBy(new LiteralInline(html.Tag));
+            return false;
         }
+        if (item[0] is not ParagraphBlock { Inline.FirstChild: LiteralInline literal }) 
+        {
+            return false;
+        }
+        return literal.Content.AsSpan().StartsWith("作成者:", StringComparison.Ordinal);
     }
 
     private static bool IsLineBreakTag(ReadOnlySpan<char> tag)
