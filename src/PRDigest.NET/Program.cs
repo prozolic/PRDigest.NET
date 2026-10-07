@@ -33,6 +33,9 @@ await CreateLabelPageHtml(outputsDir, analyzedArchives);
 // (Re)create the monthly digest page for every month
 await CreateMonthlyPageHtml(outputsDir, analyzedArchives);
 
+// (Re)create the privacy policy page linked from every page's footer
+await CreatePrivacyPolicyHtml(outputsDir);
+
 // end
 var endTime = TimeProvider.System.GetTimestamp();
 Console.WriteLine($"Total elapsed time: {TimeProvider.System.GetElapsedTime(startTime, endTime).TotalSeconds} seconds.");
@@ -414,6 +417,11 @@ async ValueTask CreateLabelPageHtml(string outputsDir, ArchiveAnalysis[] analyze
         }
         await File.WriteAllTextAsync(Path.Combine(labelDir, "index.html"), HtmlGenerator.GenerateLabelPageHtml(label, info));
     });
+}
+
+async ValueTask CreatePrivacyPolicyHtml(string outputsDir)
+{
+    await File.WriteAllTextAsync(Path.Combine(outputsDir, "privacy.html"), HtmlGenerator.GeneratePrivacyPolicyHtml());
 }
 
 internal sealed class PullRequestInfo

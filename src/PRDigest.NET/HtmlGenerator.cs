@@ -19,6 +19,7 @@ internal static class HtmlGenerator
         Monthly, // outputs/yyyy/MM/index.html
         LabelIndex, // outputs/labels/index.html
         LabelPage, //outputs/labels/{label}/index.html
+        Privacy, // outputs/privacy.html
     }
 
     // Escapes the HTML syntax characters but leaves Japanese as-is: HtmlEncoder.Default would turn
@@ -1325,6 +1326,24 @@ document.addEventListener('click', function(e) {
         builder.AppendLiteral("; display: inline-block; padding: 0 7px; font-size: 12px; font-weight: 500; line-height: 1.5; border-radius: 0.2em; border: 1px solid transparent;\"");
     }
 
+    public static string GeneratePrivacyPolicyHtml()
+    {
+        const string content = """
+      <h2>アクセス解析ツールについて</h2>
+      <p>当サイトでは、Googleによるアクセス解析ツール「Googleアナリティクス」を使用しています。このGoogleアナリティクスはデータの収集のためにCookieを使用しています。このデータは匿名で収集されており、個人を特定するものではありません。</p>
+      <p>この機能はCookieを無効にすることで収集を拒否することが出来ますので、お使いのブラウザの設定をご確認ください。この規約に関しての詳細は<a href="https://marketingplatform.google.com/about/analytics/terms/jp/">Googleアナリティクスサービス利用規約</a>のページや<a href="https://policies.google.com/technologies/ads?hl=ja">Googleポリシーと規約</a>ページをご覧ください。</p>
+""";
+
+        return GenerateTemplateHtml(
+            pageKind: HtmlPageKind.Privacy,
+            title: "プライバシーポリシー",
+            subTitle: "dotnet/runtimeにマージされたPull RequestをAIで日本語要約",
+            content: content,
+            viewScript: "",
+            floatingTocHtml: "",
+            floatingTocScript: "");
+    }
+
     private static string GenerateLabelPage(HtmlPageKind pageKind, string title, string content, string bodyEndHtml = "")
     {
         return GenerateTemplateHtml(
@@ -1420,6 +1439,7 @@ document.addEventListener('click', function(e) {
 </div>
 <footer>
   <div>
+    <p><a href="{{GetSiteRootPath(pageKind)}}privacy.html">プライバシーポリシー</a></p>
     <p>Copyright &copy; 2025 prozolic</p>
   </div>
 </footer>
@@ -1607,7 +1627,16 @@ document.addEventListener('DOMContentLoaded', function() {
         HtmlPageKind.Monthly => MonthlyCss,
         HtmlPageKind.LabelIndex => LabelIndexCss,
         HtmlPageKind.LabelPage => LabelPageCss,
+        HtmlPageKind.Privacy => PrivacyCss,
         _ => BaseCss,
+    };
+
+    private static string GetSiteRootPath(HtmlPageKind pageKind) => pageKind switch
+    {
+        HtmlPageKind.Index or HtmlPageKind.Privacy => "",
+        HtmlPageKind.LabelIndex => "../",
+        HtmlPageKind.Daily or HtmlPageKind.Monthly or HtmlPageKind.LabelPage => "../../",
+        _ => throw new ArgumentOutOfRangeException(nameof(pageKind)),
     };
 
     // outputs/index.html: month <details> list, latest digest stats, scroll-to-top button.
@@ -1672,6 +1701,9 @@ document.addEventListener('DOMContentLoaded', function() {
 
     // outputs/labels/{label}/index.html: a single PR list plus the scroll-to-top button.
     private const string LabelPageCss = BaseCss + LabelPrListCss + ScrollToTopCss;
+
+    // outputs/privacy.html: headings, paragraphs and lists only.
+    private const string PrivacyCss = BaseCss;
 
     // Layout shared by every page: navbar, header, content card, base typography and footer.
     private const string BaseCss = """
@@ -1842,6 +1874,21 @@ document.addEventListener('DOMContentLoaded', function() {
     footer p {
       margin: 8px 0;
       color: #9ca3af;
+    }
+
+    /* The footer stays dark in light mode too, so links get a light color (the body link blue is
+       too dark here) and a 44px-tall hit area for phones. */
+    footer a {
+      display: inline-flex;
+      align-items: center;
+      min-height: 44px;
+      padding: 0 6px;
+      color: #d1d5db;
+      text-decoration: underline;
+    }
+
+    footer a:hover {
+      color: #ffffff;
     }
 
     @media (min-width: 1200px) {
