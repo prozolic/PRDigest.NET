@@ -5,6 +5,7 @@ using Octokit;
 using PRDigest.NET;
 using System.Runtime.InteropServices;
 using System.Text;
+using Anthropic.Models.Messages.Batches;
 
 if (args.Length == 0) return;
 
@@ -13,6 +14,11 @@ var startTime = TimeProvider.System.GetTimestamp();
 var archivesDir = args[0];
 var outputsDir = args[1];
 var parallelOptions = new ParallelOptions { MaxDegreeOfParallelism = Math.Min(4, Environment.ProcessorCount) };
+
+// Summarization settings shared by the Messages API and the Message Batches API.
+// Thinking is turned off with "between_tools" (Sonnet 5.5 rejects "disabled"), so max_tokens covers only the summary.
+const int SummaryMaxTokens = 1024;
+const Model summaryModel = Model.ClaudeSonnet5_5; // Claude Sonnet 5.5
 
 if (args.Length == 3 && args[2] == "-g")
 {
@@ -76,7 +82,12 @@ async ValueTask SummarizeCurrentPullRequestAndCreate(string archivesDir, string 
     Console.WriteLine($"{pullRequestInfos.Length} pull requests into {Constants.FullRepository} were merged between {startTargetDate:yyyy/MM/dd HH:mm:ss} and {endTargetDate:yyyy/MM/dd HH:mm:ss}.");
 
     // Generate HTML content for each pull request using Anthropic API.
-    var markdown = await SummarizePullRequestAsync(pullRequestInfos);
+    // Many PRs (weekdays: 16-56) go through the Message Batches API at half the price.
+    // A few PRs (mostly weekends) are summarized one by one: the saving is too small to wait for a batch.
+    const int BatchThreshold = 20;
+    var markdown = pullRequestInfos.Length >= BatchThreshold
+        ? await SummarizePullRequestWithBatchAsync(pullRequestInfos)
+        : await SummarizePullRequestAsync(pullRequestInfos);
     if (string.IsNullOrEmpty(markdown)) return;
 
     // Save markdown and HTML files.
@@ -177,75 +188,141 @@ async ValueTask<PullRequestInfo[]> GetAllPullRequestInfoAsync(DateTimeOffset sta
 
 async ValueTask<string> SummarizePullRequestAsync(PullRequestInfo[] pullRequestInfos)
 {
-    var markdownlBuilder = new StringBuilder();
-    var tableOfContentsBuilder = new StringBuilder();
-    tableOfContentsBuilder.AppendLine("### 目次 {#table-of-contents}");
+    var llmOutputs = new string?[pullRequestInfos.Length];
+    await SummarizeSequentiallyAsync(CreateAnthropicClient(), pullRequestInfos, llmOutputs);
+    return CreateMarkdown(pullRequestInfos, llmOutputs);
+}
 
-    var index = 1;
-    var separator = Environment.NewLine + "---" + Environment.NewLine;
-    var totalInputTokens = 0L;
+async ValueTask<string> SummarizePullRequestWithBatchAsync(PullRequestInfo[] pullRequestInfos)
+{
+    // Most batches end within an hour, but collect-prs.yml caps the job (timeout-minutes),
+    // so give up after this rather than publish a digest built from a partly finished batch.
+    var batchTimeout = TimeSpan.FromMinutes(40);
+    var pollingInterval = TimeSpan.FromSeconds(30);
+
+    var client = CreateAnthropicClient();
+
+    // custom_id must match ^[a-zA-Z0-9_-]{1,64}$.
+    var indexByCustomId = new Dictionary<string, int>(pullRequestInfos.Length);
+    var requests = new Request[pullRequestInfos.Length];
+
+    for (var i = 0; i < pullRequestInfos.Length; i++)
+    {
+        var customId = $"pr-{pullRequestInfos[i].Issue.Number}";
+        indexByCustomId[customId] = i;
+        requests[i] = new Request
+        {
+            CustomID = customId,
+            Params = new Params
+            {
+                MaxTokens = SummaryMaxTokens,
+                Model = summaryModel,
+                Thinking = new ThinkingConfigBetweenTools(),
+                System = new ParamsSystem([new TextBlockParam { Text = PromptGenerator.SystemPrompt }]),
+                Messages = [new() { Role = Role.User, Content = PromptGenerator.GeneratePrompt(pullRequestInfos[i]) }],
+            },
+        };
+    }
+
+    var llmOutputs = new string?[pullRequestInfos.Length];
+    try
+    {
+        var batch = await client.Messages.Batches.Create(new BatchCreateParams { Requests = requests });
+        Console.WriteLine($"[INFO] Batch {batch.ID} created with {requests.Length} requests.");
+
+        var startTime = TimeProvider.System.GetTimestamp();
+        while (batch.ProcessingStatus != ProcessingStatus.Ended)
+        {
+            if (TimeProvider.System.GetElapsedTime(startTime) > batchTimeout)
+            {
+                // Cancel so that the requests not yet processed are neither run nor billed, then fail the run:
+                // no markdown is written, so the day can be summarized again from scratch.
+                Console.WriteLine($"[ERROR] Batch {batch.ID} did not end within {batchTimeout.TotalMinutes} minutes. Canceling it.");
+                await client.Messages.Batches.Cancel(batch.ID);
+                throw new TimeoutException($"Batch {batch.ID} did not end within {batchTimeout.TotalMinutes} minutes.");
+            }
+
+            await Task.Delay(pollingInterval);
+            batch = await client.Messages.Batches.Retrieve(batch.ID);
+
+            // request_counts other than processing stay 0 until the whole batch ends, so only processing is worth logging here.
+            if (batch.ProcessingStatus != ProcessingStatus.Ended)
+            {
+                Console.WriteLine($"[INFO] Batch {batch.ID} is still processing {batch.RequestCounts.Processing} requests.");
+            }
+        }
+
+        // Processing time as measured by the API (ended_at - created_at), independent of the polling interval.
+        var counts = batch.RequestCounts;
+        var processingTime = batch.EndedAt is { } endedAt ? $"{(endedAt - batch.CreatedAt).TotalSeconds:F0}s" : "unknown";
+        Console.WriteLine($"[INFO] Batch {batch.ID} ended. processing-time:{processingTime} succeeded:{counts.Succeeded} errored:{counts.Errored} canceled:{counts.Canceled} expired:{counts.Expired}");
+
+        await foreach (var response in client.Messages.Batches.ResultsStreaming(batch.ID))
+        {
+            if (!indexByCustomId.TryGetValue(response.CustomID, out var i)) continue;
+
+            if (response.Result.TryPickSucceeded(out var succeeded))
+            {
+                var message = succeeded.Message;
+                Console.WriteLine($"[INFO] #{pullRequestInfos[i].Issue.Number} input-token:{message.Usage.InputTokens} output-token:{message.Usage.OutputTokens}");
+                llmOutputs[i] = ExtractText(message);
+            }
+            else if (response.Result.TryPickErrored(out var errored))
+            {
+                Console.WriteLine($"[WARN] #{pullRequestInfos[i].Issue.Number} errored in batch: {errored.Error.Error}");
+            }
+            else if (response.Result.TryPickExpired(out _))
+            {
+                Console.WriteLine($"[WARN] #{pullRequestInfos[i].Issue.Number} expired in batch.");
+            }
+            else if (response.Result.TryPickCanceled(out _))
+            {
+                Console.WriteLine($"[WARN] #{pullRequestInfos[i].Issue.Number} canceled in batch.");
+            }
+        }
+    }
+    catch (AnthropicRateLimitException rle)
+    {
+        Console.WriteLine($"[ERROR] AnthropicRateLimitException: {rle.StatusCode}");
+        throw;
+    }
+    catch (AnthropicBadRequestException bre)
+    {
+        Console.WriteLine($"[ERROR] AnthropicBadRequestException: {bre.StatusCode}");
+        throw;
+    }
+
+    // Fills only the entries the batch did not produce (requests that errored in it).
+    await SummarizeSequentiallyAsync(client, pullRequestInfos, llmOutputs);
+    return CreateMarkdown(pullRequestInfos, llmOutputs);
+}
+
+async ValueTask SummarizeSequentiallyAsync(IAnthropicClient client, PullRequestInfo[] pullRequestInfos, string?[] llmOutputs)
+{
     var totalInputTokensPerMinute = 0L;
-    var totalOutputTokens = 0L;
-    var totalOutputTokensPerMinute = 0L;
 
     try
     {
-        // Generate HTML content for each pull request using Anthropic API.
-        // Configures ANTHROPIC_API_KEY.
-        AnthropicClient anthropicClient = new();
-
-        foreach (var pr in pullRequestInfos)
+        for (var i = 0; i < pullRequestInfos.Length; i++)
         {
+            if (llmOutputs[i] is not null) continue;
+
+            var pr = pullRequestInfos[i];
             MessageCreateParams parameters = new()
             {
-                MaxTokens = 1024,
-                Model = Model.ClaudeHaiku4_5_20251001, // Claude Haiku 4.5
+                MaxTokens = SummaryMaxTokens,
+                Model = summaryModel,
+                Thinking = new ThinkingConfigBetweenTools(),
                 System = new MessageCreateParamsSystem([new() { Text = PromptGenerator.SystemPrompt }]),
                 Messages = [new() { Role = Role.User, Content = PromptGenerator.GeneratePrompt(pr) }],
             };
 
-            var message = await anthropicClient
-                .WithOptions(options => options with
-                {
-                    Timeout = TimeSpan.FromMinutes(5),
-                    MaxRetries = 3,
-                })
-                .Messages.Create(parameters);
+            var message = await client.Messages.Create(parameters);
 
             Console.WriteLine($"[INFO] #{pr.Issue.Number} input-token:{message.Usage.InputTokens} output-token:{message.Usage.OutputTokens}");
+            llmOutputs[i] = ExtractText(message);
 
-            var llmOutput = "";
-            foreach (var content in message.Content)
-            {
-                if (content.TryPickText(out var textBlock))
-                {
-                    llmOutput += textBlock.Text;
-                }
-            }
-
-            var title = TitleHelper.EscapedTitle(pr.Issue.Title);
-            tableOfContentsBuilder.AppendLine($"{index++}. [#{pr.Issue.Number} {title}](#{pr.Issue.Number})");
-
-            var labels = pr.PullRequest.Labels;
-            var labelText = labels.Count > 0 ?
-                string.Join(" ", labels.Select(label => $"<a style=\"text-decoration:none;\" href=\"../../labels/{HtmlGenerator.SanitizeLabelForPath(label.Name)}/index.html\"><span style=\"background-color: #{label.Color}; color: {GitHubLabalColor.GetFontColor(label.Color)}; display: inline-block; padding: 0 7px; font-size:12px; font-weight:500; line-height:18px; border-radius:2em; border:1px solid transparent;\">{label.Name}</span></a>")) :
-                "指定なし";
-
-            var prHeader = $$"""
-### [#{{pr.Issue.Number}}]({{pr.Issue.HtmlUrl}}) {{title}} {#{{pr.Issue.Number}}}
-- 作成者: [@{{pr.Issue.User.Login}}]({{pr.Issue.User.HtmlUrl}})
-- 作成日時: {{pr.Issue.CreatedAt:yyyy年MM月dd日 HH:mm:ss}}(UTC)
-- マージ日時: {{pr.PullRequest.MergedAt:yyyy年MM月dd日 HH:mm:ss}}(UTC)
-- ラベル: {{labelText}}
-
-""";
-            markdownlBuilder.AppendLine(prHeader + llmOutput);
-            markdownlBuilder.Append(separator);
-
-            totalInputTokens += message.Usage.InputTokens;
             totalInputTokensPerMinute += message.Usage.InputTokens;
-            totalOutputTokens += message.Usage.OutputTokens;
-            totalOutputTokensPerMinute += message.Usage.OutputTokens;
 
             // Since input tokens are variable, wait if it exceeds 30,000 tokens per minute
             if (totalInputTokensPerMinute >= 30000)
@@ -264,6 +341,63 @@ async ValueTask<string> SummarizePullRequestAsync(PullRequestInfo[] pullRequestI
     {
         Console.WriteLine($"[ERROR] AnthropicBadRequestException: {bre.StatusCode}");
         throw;
+    }
+}
+
+IAnthropicClient CreateAnthropicClient()
+{
+    // Configures ANTHROPIC_API_KEY.
+    AnthropicClient anthropicClient = new();
+    return anthropicClient.WithOptions(options => options with
+    {
+        Timeout = TimeSpan.FromMinutes(5),
+        MaxRetries = 3,
+    });
+}
+
+string ExtractText(Message message)
+{
+    var builder = new StringBuilder();
+    foreach (var content in message.Content)
+    {
+        if (content.TryPickText(out var textBlock))
+        {
+            builder.Append(textBlock.Text);
+        }
+    }
+    return builder.ToString();
+}
+
+// Builds the daily markdown (table of contents + one section per PR) in the original PR order.
+string CreateMarkdown(PullRequestInfo[] pullRequestInfos, string?[] llmOutputs)
+{
+    var markdownlBuilder = new StringBuilder();
+    var tableOfContentsBuilder = new StringBuilder();
+    tableOfContentsBuilder.AppendLine("### 目次 {#table-of-contents}");
+
+    var separator = Environment.NewLine + "---" + Environment.NewLine;
+
+    for (var i = 0; i < pullRequestInfos.Length; i++)
+    {
+        var pr = pullRequestInfos[i];
+        var title = TitleHelper.EscapedTitle(pr.Issue.Title);
+        tableOfContentsBuilder.AppendLine($"{i + 1}. [#{pr.Issue.Number} {title}](#{pr.Issue.Number})");
+
+        var labels = pr.PullRequest.Labels;
+        var labelText = labels.Count > 0 ?
+            string.Join(" ", labels.Select(label => $"<a style=\"text-decoration:none;\" href=\"../../labels/{HtmlGenerator.SanitizeLabelForPath(label.Name)}/index.html\"><span style=\"background-color: #{label.Color}; color: {GitHubLabalColor.GetFontColor(label.Color)}; display: inline-block; padding: 0 7px; font-size:12px; font-weight:500; line-height:18px; border-radius:2em; border:1px solid transparent;\">{label.Name}</span></a>")) :
+            "指定なし";
+
+        var prHeader = $$"""
+### [#{{pr.Issue.Number}}]({{pr.Issue.HtmlUrl}}) {{title}} {#{{pr.Issue.Number}}}
+- 作成者: [@{{pr.Issue.User.Login}}]({{pr.Issue.User.HtmlUrl}})
+- 作成日時: {{pr.Issue.CreatedAt:yyyy年MM月dd日 HH:mm:ss}}(UTC)
+- マージ日時: {{pr.PullRequest.MergedAt:yyyy年MM月dd日 HH:mm:ss}}(UTC)
+- ラベル: {{labelText}}
+
+""";
+        markdownlBuilder.AppendLine(prHeader + llmOutputs[i]);
+        markdownlBuilder.Append(separator);
     }
 
     return $"{tableOfContentsBuilder}{separator}{markdownlBuilder}";

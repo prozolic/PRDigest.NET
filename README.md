@@ -14,7 +14,11 @@ The application runs automatically via GitHub Actions every day at midnight (UTC
 
 ## AI Model
 
-Claude Haiku 4.5
+Claude Sonnet 5.5
+
+### Previous models
+
+- Claude Haiku 4.5: used from December 21, 2025 to October 8, 2026
 
 ## Development
 
@@ -44,7 +48,7 @@ https://prozolic.github.io/PRDigest.NET/feed.xml
 
 #### Markdig
 
-- Version: 1.2.0
+- Version: 1.4.0
 - URL: https://github.com/xoofx/markdig
 - Copyright (c) 2018-2019, Alexandre Mutel
 - Licensed under the [BSD 2-Clause License](https://github.com/xoofx/markdig/blob/main/license.txt)
@@ -58,7 +62,7 @@ https://prozolic.github.io/PRDigest.NET/feed.xml
 
 #### Anthropic SDK for C\#
 
-- Version: 12.23.0
+- Version: 12.54.1
 - URL: https://github.com/anthropics/anthropic-sdk-csharp
 - Copyright 2023 Anthropic, PBC.
 - Licensed under the [MIT License](https://github.com/anthropics/anthropic-sdk-csharp/blob/main/LICENSE)
