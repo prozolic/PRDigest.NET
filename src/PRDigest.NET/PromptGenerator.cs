@@ -75,7 +75,6 @@ internal static partial class PromptGenerator
 Pull Request:
 - {info.PullRequest.Title} #{info.PullRequest.Number}
 - 作成者: {info.PullRequest.User.Login}
-- レビュワー: {GenerateReviewersText(info)}
 
 作成者による概要:
 {GenerateBody(info)}
@@ -97,23 +96,6 @@ Copilotによる概要:
             body = "なし";
         }
         return body;
-    }
-
-    private static string GenerateReviewersText(PullRequestInfo info)
-    {
-        var reviews = info.Reviews;
-        var builder = new DefaultInterpolatedStringHandler(0, 0);
-        for (int i = 0; i < reviews.Count; i++)
-        {
-            var pullRequestReview = reviews[i];
-            builder.AppendLiteral(pullRequestReview.User.Login);
-            if (i < reviews.Count - 1)
-            {
-                builder.AppendLiteral(", ");
-            }
-        }
-
-        return builder.ToStringAndClear();
     }
 
     private static string GenerateCopilotReviewText(PullRequestInfo pullRequestInfo)

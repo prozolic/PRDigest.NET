@@ -16,7 +16,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-    timeout-minutes: 20
+    timeout-minutes: 70 # Message Batches: up to 40 min wait (Program.cs) + one-by-one fallback
     outputs:
       has_changes: ${{ steps.commit.outputs.has_changes }}
     steps:
