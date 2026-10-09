@@ -15,11 +15,6 @@ var archivesDir = args[0];
 var outputsDir = args[1];
 var parallelOptions = new ParallelOptions { MaxDegreeOfParallelism = Math.Min(4, Environment.ProcessorCount) };
 
-// Summarization settings shared by the Messages API and the Message Batches API.
-// Thinking is turned off with "between_tools" (Sonnet 5.5 rejects "disabled"), so max_tokens covers only the summary.
-const int SummaryMaxTokens = 1024;
-const Model summaryModel = Model.ClaudeSonnet5_5; // Claude Sonnet 5.5
-
 if (args.Length == 3 && args[2] == "-g")
 {
     // generate current day's PR markdown and HTML
@@ -215,8 +210,8 @@ async ValueTask<string> SummarizePullRequestWithBatchAsync(PullRequestInfo[] pul
             CustomID = customId,
             Params = new Params
             {
-                MaxTokens = SummaryMaxTokens,
-                Model = summaryModel,
+                MaxTokens = Constants.SummaryMaxTokens,
+                Model = Constants.SummaryModel,
                 Thinking = new ThinkingConfigBetweenTools(),
                 System = new ParamsSystem([new TextBlockParam { Text = PromptGenerator.SystemPrompt }]),
                 Messages = [new() { Role = Role.User, Content = PromptGenerator.GeneratePrompt(pullRequestInfos[i]) }],
@@ -265,7 +260,7 @@ async ValueTask<string> SummarizePullRequestWithBatchAsync(PullRequestInfo[] pul
             {
                 var message = succeeded.Message;
                 Console.WriteLine($"[INFO] #{pullRequestInfos[i].Issue.Number} input-token:{message.Usage.InputTokens} output-token:{message.Usage.OutputTokens}");
-                llmOutputs[i] = ExtractText(message);
+                llmOutputs[i] = GetSummaryText(pullRequestInfos[i].Issue.Number, message);
             }
             else if (response.Result.TryPickErrored(out var errored))
             {
@@ -310,8 +305,8 @@ async ValueTask SummarizeSequentiallyAsync(IAnthropicClient client, PullRequestI
             var pr = pullRequestInfos[i];
             MessageCreateParams parameters = new()
             {
-                MaxTokens = SummaryMaxTokens,
-                Model = summaryModel,
+                MaxTokens = Constants.SummaryMaxTokens,
+                Model = Constants.SummaryModel,
                 Thinking = new ThinkingConfigBetweenTools(),
                 System = new MessageCreateParamsSystem([new() { Text = PromptGenerator.SystemPrompt }]),
                 Messages = [new() { Role = Role.User, Content = PromptGenerator.GeneratePrompt(pr) }],
@@ -320,7 +315,7 @@ async ValueTask SummarizeSequentiallyAsync(IAnthropicClient client, PullRequestI
             var message = await client.Messages.Create(parameters);
 
             Console.WriteLine($"[INFO] #{pr.Issue.Number} input-token:{message.Usage.InputTokens} output-token:{message.Usage.OutputTokens}");
-            llmOutputs[i] = ExtractText(message);
+            llmOutputs[i] = GetSummaryText(pr.Issue.Number, message);
 
             totalInputTokensPerMinute += message.Usage.InputTokens;
 
@@ -353,6 +348,26 @@ IAnthropicClient CreateAnthropicClient()
         Timeout = TimeSpan.FromMinutes(5),
         MaxRetries = 3,
     });
+}
+
+string GetSummaryText(int pullRequestNumber, Message message)
+{
+    // https://platform.claude.com/docs/en/build-with-claude/refusals-and-fallback
+    // A refused request comes back as a normal response (a "succeeded" result in a batch) with stop_reason "refusal".
+    // Any partial text is dropped and RefusedSummary is shown instead, so readers can tell the PR was not summarized.
+    if (message.StopReason == StopReason.Refusal)
+    {
+        Console.WriteLine($"[WARN] #{pullRequestNumber} summary was refused by the safety classifiers. category:{message.StopDetails?.Category}");
+        return Constants.RefusedSummary;
+    }
+
+    // A summary cut off at max_tokens is still written as is; the warning only makes it visible in the run log.
+    if (message.StopReason == StopReason.MaxTokens)
+    {
+        Console.WriteLine($"[WARN] #{pullRequestNumber} summary was cut off at max_tokens ({Constants.SummaryMaxTokens}).");
+    }
+
+    return ExtractText(message);
 }
 
 string ExtractText(Message message)
