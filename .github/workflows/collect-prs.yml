@@ -16,6 +16,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      id-token: write # GitHub OIDC token for Workload Identity Federation with the Claude API
     timeout-minutes: 70 # Message Batches: up to 40 min wait (Program.cs) + one-by-one fallback
     outputs:
       has_changes: ${{ steps.commit.outputs.has_changes }}
@@ -30,10 +31,36 @@ jobs:
     - name: Build
       run: dotnet build -c Release
     - name: configure-pages@v4 latest PRs and create PRs.
-      run: dotnet run --project ./src/PRDigest.NET/PRDigest.NET.csproj --no-launch-profile -c Release ./archives ./outputs -g
+      run: |
+        fetch_identity_token() {
+          local token
+          token=$(curl -fsS -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=https://api.anthropic.com" | jq -er .value) &&
+          printf '%s' "$token" > "$ANTHROPIC_IDENTITY_TOKEN_FILE.tmp" &&
+          mv "$ANTHROPIC_IDENTITY_TOKEN_FILE.tmp" "$ANTHROPIC_IDENTITY_TOKEN_FILE"
+        }
+        fetch_identity_token
+
+        # A GitHub ID token expires about 5 minutes after it is issued, while this step can run
+        # for over 40 minutes (Message Batches). The SDK re-reads the file whenever it refreshes
+        # its Anthropic access token, so keep the file fresh in the background.
+        # Every 60 s: an Anthropic token lives at most twice the JWT's remaining lifetime and is
+        # refreshed 120 s before expiry, and a JWT (jti) can be exchanged only once, so a staler
+        # file could be read again by the next refresh (jti_reused).
+        while sleep 60; do
+          fetch_identity_token || echo "::warning::Failed to refresh the GitHub OIDC token"
+        done &
+        refresher=$!
+        trap 'kill "$refresher"' EXIT
+
+        dotnet run --project ./src/PRDigest.NET/PRDigest.NET.csproj --no-launch-profile -c Release ./archives ./outputs -g
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        ANTHROPIC_FEDERATION_RULE_ID: ${{ secrets.ANTHROPIC_FEDERATION_RULE_ID }}
+        ANTHROPIC_ORGANIZATION_ID: ${{ secrets.ANTHROPIC_ORGANIZATION_ID }}
+        ANTHROPIC_SERVICE_ACCOUNT_ID: ${{ secrets.ANTHROPIC_SERVICE_ACCOUNT_ID }}
+        ANTHROPIC_WORKSPACE_ID: ${{ secrets.ANTHROPIC_WORKSPACE_ID }}
+        ANTHROPIC_IDENTITY_TOKEN_FILE: ${{ runner.temp }}/gha-jwt
     - name: Commit and push changes
       id: commit
       run: |
