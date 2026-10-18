@@ -341,7 +341,7 @@ async ValueTask SummarizeSequentiallyAsync(IAnthropicClient client, PullRequestI
 
 IAnthropicClient CreateAnthropicClient()
 {
-    // Configures ANTHROPIC_API_KEY.
+    // Configures ANTHROPIC_API_KEY (local) or Workload Identity Federation (ANTHROPIC_IDENTITY_TOKEN_FILE etc., GitHub Actions).
     AnthropicClient anthropicClient = new();
     return anthropicClient.WithOptions(options => options with
     {
