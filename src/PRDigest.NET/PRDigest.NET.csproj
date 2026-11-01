@@ -9,9 +9,9 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Markdig" Version="1.4.0" />
+    <PackageReference Include="Markdig" Version="1.5.1" />
     <PackageReference Include="Octokit" Version="14.0.0" />
-    <PackageReference Include="Anthropic" Version="12.54.1" />
+    <PackageReference Include="Anthropic" Version="13.3.0" />
   </ItemGroup>
 
 </Project>
