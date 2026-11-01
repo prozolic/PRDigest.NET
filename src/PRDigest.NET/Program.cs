@@ -214,7 +214,7 @@ async ValueTask<string> SummarizePullRequestWithBatchAsync(PullRequestInfo[] pul
                 Model = Constants.SummaryModel,
                 Thinking = new ThinkingConfigBetweenTools(),
                 System = new ParamsSystem([new TextBlockParam { Text = PromptGenerator.SystemPrompt }]),
-                Messages = [new() { Role = Role.User, Content = PromptGenerator.GeneratePrompt(pullRequestInfos[i]) }],
+                Messages = [new UserMessageParam(PromptGenerator.GeneratePrompt(pullRequestInfos[i]))],
             },
         };
     }
@@ -309,7 +309,7 @@ async ValueTask SummarizeSequentiallyAsync(IAnthropicClient client, PullRequestI
                 Model = Constants.SummaryModel,
                 Thinking = new ThinkingConfigBetweenTools(),
                 System = new MessageCreateParamsSystem([new() { Text = PromptGenerator.SystemPrompt }]),
-                Messages = [new() { Role = Role.User, Content = PromptGenerator.GeneratePrompt(pr) }],
+                Messages = [new UserMessageParam(PromptGenerator.GeneratePrompt(pr))],
             };
 
             var message = await client.Messages.Create(parameters);
